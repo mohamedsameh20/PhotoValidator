@@ -1,0 +1,125 @@
+# Advanced Image Processing Pipeline - Requirements
+# Core dependencies for the image processing and AI detection system
+
+# ===== CORE DEPENDENCIES =====
+# Python version requirement: 3.8+
+
+# Deep Learning Frameworks
+torch>=2.0.0                    # PyTorch for deep learning models
+torchvision>=0.15.0             # PyTorch vision utilities
+paddlepaddle>=2.5.0             # PaddlePaddle framework for OCR
+paddleocr>=2.7.0                # PaddleOCR for text detection
+
+# Computer Vision and Image Processing
+opencv-python>=4.8.0            # OpenCV for computer vision
+pillow>=9.0.0                   # PIL for image handling
+numpy>=1.21.0                   # NumPy for numerical operations
+matplotlib>=3.5.0               # Matplotlib for plotting and visualization
+
+# Image Quality Assessment
+pyiqa>=0.1.7                    # PyIQA for image quality metrics
+timm>=0.9.0                     # PyTorch Image Models (for PyIQA)
+
+# Machine Learning and Data Science
+scikit-learn>=1.2.0             # Scikit-learn for ML utilities
+pandas>=1.5.0                   # Pandas for data manipulation
+
+# Model Management and Distribution
+huggingface-hub>=0.16.0         # Hugging Face model hub
+tqdm>=4.64.0                    # Progress bars
+
+# ===== UTILITY LIBRARIES =====
+# These are typically included with Python but listed for completeness
+pathlib                         # Path handling (Python 3.4+)
+json5                           # Enhanced JSON parsing
+argparse                        # Command line argument parsing
+warnings                        # Warning control
+logging                         # Logging functionality
+threading                       # Multi-threading support
+dataclasses                     # Data classes (Python 3.7+)
+functools                       # Functional programming tools
+concurrent.futures              # Concurrent execution
+contextlib                      # Context management
+gc                             # Garbage collection
+shutil                         # High-level file operations
+time                           # Time-related functions
+datetime                       # Date and time handling
+traceback                      # Stack trace utilities
+re                             # Regular expressions
+typing                         # Type hints
+
+# ===== OPTIONAL DEPENDENCIES =====
+# These enhance performance but are not strictly required
+
+# GPU Acceleration (choose one based on your CUDA version)
+# For CUDA 11.8:
+# torch>=2.0.0+cu118
+# torchvision>=0.15.0+cu118
+# --extra-index-url https://download.pytorch.org/whl/cu118
+
+# For CUDA 12.1:
+# torch>=2.0.0+cu121
+# torchvision>=0.15.0+cu121
+# --extra-index-url https://download.pytorch.org/whl/cu121
+
+# For CPU-only installation:
+# torch>=2.0.0+cpu
+# torchvision>=0.15.0+cpu
+# --extra-index-url https://download.pytorch.org/whl/cpu
+
+# Additional Performance Libraries
+# numba>=0.56.0                 # JIT compilation for NumPy
+# opencv-contrib-python>=4.8.0  # Additional OpenCV modules
+
+# ===== DEVELOPMENT DEPENDENCIES =====
+# Uncomment if setting up development environment
+
+# Testing
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
+
+# Code Quality
+# black>=22.0.0                 # Code formatting
+# flake8>=5.0.0                # Linting
+# mypy>=0.991                  # Type checking
+
+# Documentation
+# sphinx>=5.0.0               # Documentation generation
+# sphinx-rtd-theme>=1.0.0     # ReadTheDocs theme
+
+# ===== INSTALLATION NOTES =====
+#
+# 1. GPU Support:
+#    - Install CUDA-compatible PyTorch for GPU acceleration
+#    - Check your CUDA version: nvidia-smi
+#    - Use appropriate index URL for your CUDA version
+#
+# 2. PaddlePaddle Installation:
+#    - For GPU: pip install paddlepaddle-gpu
+#    - For CPU: pip install paddlepaddle
+#
+# 3. Memory Requirements:
+#    - Minimum 8GB RAM for basic operation
+#    - 16GB+ recommended for batch processing
+#    - GPU memory: 6GB+ recommended
+#
+# 4. Model Downloads:
+#    - Models will be automatically downloaded on first use
+#    - Ensure stable internet connection for initial setup
+#    - Total model size: ~2-3GB
+#
+# 5. Platform-Specific Notes:
+#    - Windows: Ensure Microsoft Visual C++ Redistributable is installed
+#    - macOS: May require Xcode Command Line Tools
+#    - Linux: Ensure system packages for OpenCV (libgl1-mesa-glx, etc.)
+#
+# ===== QUICK INSTALLATION =====
+# 
+# Standard installation:
+# pip install -r requirements.txt
+#
+# With GPU support (CUDA 11.8):
+# pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu118
+#
+# CPU-only installation:
+# pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu

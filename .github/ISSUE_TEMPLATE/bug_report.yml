@@ -1,0 +1,116 @@
+name: 🐛 Bug Report
+description: File a bug report to help us improve PhotoValidator
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report! 🙏
+        
+  - type: input
+    id: contact
+    attributes:
+      label: Contact Details
+      description: How can we get in touch with you if we need more info?
+      placeholder: ex. email@example.com
+    validations:
+      required: false
+      
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Also tell us, what did you expect to happen?
+      placeholder: Tell us what you see!
+    validations:
+      required: true
+      
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: What steps can we follow to reproduce this issue?
+      placeholder: |
+        1. Run command '...'
+        2. Add images to '...'
+        3. See error
+    validations:
+      required: true
+      
+  - type: dropdown
+    id: version
+    attributes:
+      label: PhotoValidator Version
+      description: What version of PhotoValidator are you running?
+      options:
+        - Latest (main branch)
+        - v1.0.0
+        - Other (please specify in description)
+    validations:
+      required: true
+      
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      description: What operating system are you using?
+      options:
+        - Windows 10
+        - Windows 11
+        - macOS
+        - Ubuntu Linux
+        - Other Linux
+        - Other (please specify)
+    validations:
+      required: true
+      
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: What version of Python are you using?
+      placeholder: ex. 3.9.7
+    validations:
+      required: true
+      
+  - type: dropdown
+    id: gpu
+    attributes:
+      label: GPU Setup
+      description: Are you using GPU acceleration?
+      options:
+        - CPU only
+        - NVIDIA GPU (CUDA)
+        - AMD GPU
+        - Other GPU
+        - Not sure
+    validations:
+      required: false
+      
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Logs
+      description: Please copy and paste any relevant log output. This will be automatically formatted into code, so no need for backticks.
+      render: shell
+      
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Information
+      description: |
+        Anything else you want to add? Screenshots, sample images (without sensitive content), configuration details, etc.
+        
+        Tip: You can attach images or files by clicking this area to highlight it and then dragging files in.
+    validations:
+      required: false
+      
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      description: By submitting this issue, you agree to follow our Code of Conduct
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true

@@ -1,0 +1,191 @@
+# PhotoValidator - Git Ignore File
+# Generated files and directories to exclude from version control
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE and editor files
+.vscode/
+.idea/
+.vs/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyTorch and ML models
+*.pth
+*.pkl
+*.h5
+*.hdf5
+*.onnx
+
+# Downloaded models and cache
+models/
+models_cache/
+.paddleocr/
+.cache/
+.torch/
+
+# Processing results and user data
+Results/
+photos4testing/*.jpg
+photos4testing/*.jpeg
+photos4testing/*.png
+photos4testing/*.tiff
+photos4testing/*.tif
+photos4testing/*.bmp
+photos4testing/*.webp
+
+# Keep the README in photos4testing but ignore images
+!photos4testing/README.txt
+
+# Log files
+*.log
+debug.log
+processing.log
+
+# Configuration files with sensitive data
+config.json
+local_config.json
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.temp
+
+# LaTeX build files
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.pdf
+*.synctex.gz
+*.tex
+
+# Analysis and debug files
+*.json
+!requirements.json
+advanced_editing_analysis_*.json
+watermark_detection_report.json
+
+# Development documentation (keep only main docs)
+README_*.md
+!README.md
+
+# Empty Python files and development scripts
+clean_pyiqa_analysis.py
+generate_comprehensive_charts.py
+individual_charts_pyiqa_analysis.py
+pyiqa_professional_analysis.py
+pyiqa_quality_analysis.py
+README_Layout_Warning_Fix.md
+README_PyIQA_Implementation.md
+README_pyiqa_layout_improvements.md
+README_PyIQA_Professional_Improvements.md
+
+# Test images and debug visualizations
+debug_visualizations/
+test_images/
+*.jpg
+*.jpeg
+*.png
+*.tiff
+*.tif
+*.bmp
+*.webp
+
+# Except sample/demo images in specific folders
+!sample_images/
+!docs/images/
+!.github/images/
+
+# Runtime files
+run_debug_simple.bat
+run_debug_simple.ps1
+generate_debug_simple.py
+generate_debug_visualizations.py
+
+# Old setup scripts (replaced by setup.py)
+setup.bat
+setup.sh
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+*.lnk
+
+# Linux
+*~
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Documentation build
+docs/_build/
+site/
+
+# Backup files
+*.bak
+*.backup
