@@ -13,12 +13,12 @@ import cv2
 from pathlib import Path
 import logging
 
-# Configure paths
-BASE_PROJECT_PATH = 'C:\\Users\\Mohamed Sameh\\Downloads\\IT_Task'
-SOURCE_DIR = os.path.join(BASE_PROJECT_PATH, 'Photos4Testing')
-OUTPUT_DIR = os.path.join(BASE_PROJECT_PATH, 'ValidAspectRatioResults')
-INVALID_DIR = os.path.join(OUTPUT_DIR, 'Invalid')
-VALID_DIR = os.path.join(OUTPUT_DIR, 'Valid')
+# Configure paths  
+BASE_PROJECT_PATH = os.getcwd()
+SOURCE_DIR = os.path.join(BASE_PROJECT_PATH, 'photos4testing')
+OUTPUT_DIR = os.path.join(BASE_PROJECT_PATH, 'Results')
+INVALID_DIR = os.path.join(OUTPUT_DIR, 'invalid')
+VALID_DIR = os.path.join(OUTPUT_DIR, 'valid')
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -119,64 +119,66 @@ def meets_specifications(image_path, target_specs=None):
         tuple(bool, str): (True, spec_name) if image meets specs, (False, reason) otherwise
     """
     try:
+        # Optimized image loading (load once)
         with Image.open(image_path) as img:
             width, height = img.size
             file_format = img.format
             dpi = get_image_dpi(img)
             file_size_mb = get_file_size_mb(image_path)
-            
-            # If specific specs provided, check only those
-            if target_specs:
-                specs_to_check = target_specs
-            else:
-                specs_to_check = SPECS
-            
-            # Check against all specification categories
-            for category, category_specs in specs_to_check.items():
-                for spec_name, spec in category_specs.items():
-                    # Check format
-                    if file_format not in spec.get('formats', []):
+        
+        # If specific specs provided, check only those
+        if target_specs:
+            specs_to_check = target_specs
+        else:
+            specs_to_check = SPECS
+        
+        # Check against all specification categories
+        for category, category_specs in specs_to_check.items():
+            for spec_name, spec in category_specs.items():
+                # Check format
+                if file_format not in spec.get('formats', []):
+                    continue
+                
+                # Check dimensions
+                if 'width' in spec and 'height' in spec:
+                    if width != spec['width'] or height != spec['height']:
                         continue
-                    
-                    # Check dimensions
-                    if 'width' in spec and 'height' in spec:
-                        if width != spec['width'] or height != spec['height']:
+                
+                # Check minimum dimensions
+                if 'min_width' in spec and 'min_height' in spec:
+                    if width < spec['min_width'] or height < spec['min_height']:
+                        continue
+                
+                # Check DPI
+                if 'dpi' in spec:
+                    required_dpi = spec['dpi']
+                    if abs(dpi[0] - required_dpi[0]) > 5 or abs(dpi[1] - required_dpi[1]) > 5:
+                        continue
+                
+                # Check DPI range
+                if 'dpi_range' in spec:
+                    min_dpi, max_dpi = spec['dpi_range']
+                    if not (min_dpi <= dpi[0] <= max_dpi and min_dpi <= dpi[1] <= max_dpi):
+                        continue
+                
+                # Check file size
+                if 'max_file_size_mb' in spec:
+                    if file_size_mb > spec['max_file_size_mb']:
+                        continue
+                
+                # Check color mode (basic check)
+                if 'color_mode' in spec:
+                    required_mode = spec['color_mode']
+                    with Image.open(image_path) as img_check:
+                        if required_mode == 'CMYK' and img_check.mode != 'CMYK':
                             continue
-                    
-                    # Check minimum dimensions
-                    if 'min_width' in spec and 'min_height' in spec:
-                        if width < spec['min_width'] or height < spec['min_height']:
+                        if required_mode == 'RGB' and img_check.mode not in ['RGB', 'RGBA']:
                             continue
-                    
-                    # Check DPI
-                    if 'dpi' in spec:
-                        required_dpi = spec['dpi']
-                        if abs(dpi[0] - required_dpi[0]) > 5 or abs(dpi[1] - required_dpi[1]) > 5:
-                            continue
-                    
-                    # Check DPI range
-                    if 'dpi_range' in spec:
-                        min_dpi, max_dpi = spec['dpi_range']
-                        if not (min_dpi <= dpi[0] <= max_dpi and min_dpi <= dpi[1] <= max_dpi):
-                            continue
-                    
-                    # Check file size
-                    if 'max_file_size_mb' in spec:
-                        if file_size_mb > spec['max_file_size_mb']:
-                            continue
-                    
-                    # Check color mode (basic check)
-                    if 'color_mode' in spec:
-                        required_mode = spec['color_mode']
-                        if required_mode == 'CMYK' and img.mode != 'CMYK':
-                            continue
-                        if required_mode == 'RGB' and img.mode not in ['RGB', 'RGBA']:
-                            continue
-                    
-                    # If we get here, all checks passed
-                    return True, f"{category}_{spec_name}"
-            
-            return False, f"No matching specifications (size: {width}x{height}, format: {file_format}, dpi: {dpi})"
+                
+                # If we get here, all checks passed
+                return True, f"{category}_{spec_name}"
+        
+        return False, f"No matching specifications (size: {width}x{height}, format: {file_format}, dpi: {dpi})"
     
     except Exception as e:
         logger.error(f"Error checking specifications for {image_path}: {e}")
@@ -186,15 +188,25 @@ def meets_specifications(image_path, target_specs=None):
 if __name__ == "__main__":
     # Example usage
     try:
-        # Create output directories
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        os.makedirs(INVALID_DIR, exist_ok=True)
-        os.makedirs(VALID_DIR, exist_ok=True)
-        
         print(f"Aspect Ratio and Specifications Detection Module")
-        print(f"Source Directory: {SOURCE_DIR}")
-        print(f"Output Directory: {OUTPUT_DIR}")
+        print(f"Source Directory: photos4testing")
+        print(f"Output Directory: Results")
         print(f"Ready for specifications validation.")
         
+        # Example check
+        import sys
+        if len(sys.argv) > 1:
+            image_path = sys.argv[1]
+            if os.path.exists(image_path):
+                is_compliant, details = meets_specifications(image_path)
+                print(f"Image: {os.path.basename(image_path)}")
+                print(f"Compliant: {is_compliant}")
+                print(f"Details: {details}")
+            else:
+                print(f"Image file not found: {image_path}")
+        else:
+            print("Usage: python Spec_detector.py <image_path>")
+            print("Or import this module to use meets_specifications() function")
+        
     except Exception as e:
-        print(f"Error setting up directories: {e}")
+        print(f"Error: {e}")

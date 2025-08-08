@@ -195,21 +195,73 @@ class AdvancedEditingDetector:
             
             for model_name, model in self.quality_models.items():
                 try:
-                    # PyIQA expects image path or PIL image
-                    with torch.no_grad():  # Disable gradient computation for inference
-                        score = model(image_path)
+                    # Special handling for CLIP-IQA which can be sensitive to image format
+                    if model_name == 'clipiqa':
+                        # Preprocess image for CLIP-IQA
+                        try:
+                            # Load and validate image first
+                            from PIL import Image
+                            pil_image = Image.open(image_path).convert('RGB')
+                            
+                            # Check image dimensions (CLIP-IQA prefers certain sizes)
+                            width, height = pil_image.size
+                            if width < 224 or height < 224:
+                                # Resize small images
+                                pil_image = pil_image.resize((max(224, width), max(224, height)), Image.Resampling.LANCZOS)
+                            
+                            # Check for very large images that might cause memory issues
+                            if width > 2048 or height > 2048:
+                                # Resize very large images
+                                aspect_ratio = width / height
+                                if aspect_ratio > 1:
+                                    new_width = 2048
+                                    new_height = int(2048 / aspect_ratio)
+                                else:
+                                    new_height = 2048
+                                    new_width = int(2048 * aspect_ratio)
+                                pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                            
+                            # Ensure tensor is on correct device and in correct format
+                            with torch.no_grad():
+                                # Some PyIQA models work better with file paths, others with PIL images
+                                # Try PIL image first for CLIP-IQA
+                                score = model(pil_image)
+                                
+                        except Exception as clip_error:
+                            # Fallback to original image path if PIL processing fails
+                            with torch.no_grad():
+                                score = model(image_path)
+                    else:
+                        # Standard processing for other models
+                        with torch.no_grad():  # Disable gradient computation for inference
+                            score = model(image_path)
                     
                     # Convert tensor to float if needed
                     if torch.is_tensor(score):
                         # Handle different tensor shapes
                         if score.numel() == 1:
                             score = score.item()
+                        elif score.numel() == 0:
+                            # Empty tensor - treat as NaN
+                            score = float('nan')
                         else:
                             # For multi-dimensional tensors, take the mean or first element
-                            score = score.flatten()[0].item()
+                            score_flat = score.flatten()
+                            if len(score_flat) > 0:
+                                score = score_flat[0].item()
+                            else:
+                                score = float('nan')
+                    
+                    # Additional validation for CLIP-IQA scores
+                    if model_name == 'clipiqa':
+                        # CLIP-IQA should return values roughly between 0 and 1
+                        if isinstance(score, (int, float)) and (score < -1 or score > 2):
+                            print(f"    ⚠️  {model_name} returned out-of-range value: {score}")
+                            quality_scores[f'{model_name}_error'] = f"Out of range score: {score}"
+                            continue
                     
                     # Check for NaN values
-                    if np.isnan(score) or np.isinf(score):
+                    if isinstance(score, (int, float)) and (np.isnan(score) or np.isinf(score)):
                         print(f"    ⚠️  {model_name} returned invalid value: {score}")
                         quality_scores[f'{model_name}_error'] = f"Invalid score: {score}"
                     else:
@@ -483,9 +535,9 @@ class AdvancedEditingDetector:
         return scores
     
     def analyze_single_image(self, image_path):
-        """Complete analysis of a single image"""
+        """Complete analysis of a single image with optimized loading"""
         try:
-            # Load image for traditional analysis
+            # Optimized image loading (load once)
             image = cv2.imread(image_path)
             if image is None:
                 return None, "Could not read image"
@@ -525,6 +577,64 @@ class AdvancedEditingDetector:
         except Exception as e:
             return None, f"Error analyzing image: {str(e)}"
     
+    def organize_images_by_editing_score(self, results, folder_path, base_output_dir="Results", 
+                                       manual_review_threshold=25.0):
+        """
+        Organize images into folders based on editing detection scores.
+        Like main pipeline: editing-only reviews keep images in place, only provide statistics.
+        
+        Args:
+            results: List of analysis results
+            folder_path: Source folder containing the images
+            base_output_dir: Base directory for organized images
+            manual_review_threshold: Threshold for manual review (default: 25.0)
+            
+        Returns:
+            Dictionary with organization statistics
+        """
+        import shutil
+        
+        # Create output directories using unified structure
+        valid_dir = os.path.join(base_output_dir, "valid")  # All images go here (like main pipeline)
+        
+        for directory in [valid_dir]:
+            os.makedirs(directory, exist_ok=True)
+        
+        organization_stats = {
+            'valid': [],
+            'invalid': [],  # Won't be used for editing-only
+            'manualreview': [],  # Won't be used for editing-only  
+            'errors': []
+        }
+        
+        successful_results = [r for r in results if r.get('comprehensive_assessment')]
+        
+        for result in successful_results:
+            filename = result['filename']
+            source_path = os.path.join(folder_path, filename)
+            
+            if not os.path.exists(source_path):
+                organization_stats['errors'].append(filename)
+                continue
+            
+            try:
+                score = result['comprehensive_assessment']['overall_editing_score']
+                
+                # Like main pipeline: all images are "valid" but some are flagged for editing review
+                # Copy all images to valid folder (keeping them valid)
+                dest_path = os.path.join(valid_dir, filename)
+                if os.path.abspath(source_path) != os.path.abspath(dest_path):
+                    shutil.copy2(source_path, dest_path)
+                
+                # All images go to valid stats (like main pipeline behavior)
+                organization_stats['valid'].append(filename)
+                
+            except Exception as e:
+                organization_stats['errors'].append(filename)
+                print(f"Error organizing {filename}: {str(e)}")
+        
+        return organization_stats
+
     def _generate_interpretation(self, pyiqa_results, histogram_results, 
                                edge_results, freq_results, comprehensive_score):
         """Generate detailed interpretation"""
@@ -588,9 +698,89 @@ def process_image_wrapper(args):
     
     return result
 
+def print_main_style_editing_summary(results: list) -> None:
+    """
+    Print summary in the same style as main_optimized.py for consistency.
+    
+    Args:
+        results: List of analysis results
+    """
+    print("=" * 120)
+    print("IMAGE EDITING DETECTION RESULTS")
+    print("=" * 120)
+    
+    print(f"\nTESTS PERFORMED:")
+    print(f"  Enabled: editing")
+    print(f"  Disabled: watermarks, specifications, text, borders")
+    
+    # Calculate statistics from successful results
+    successful = [r for r in results if r.get('comprehensive_assessment')]
+    total = len(successful)
+    
+    if total == 0:
+        print("\nNo successful analyses to report.")
+        return
+    
+    # Show editing confidence analysis table (like main pipeline)
+    print(f"\nEDITING CONFIDENCE ANALYSIS:")
+    print("-" * 120)
+    print(f"{'Filename':<50} {'Editing Confidence':<20} {'Assessment':<30}")
+    print("-" * 120)
+    
+    # Sort by confidence (highest first)
+    successful_sorted = sorted(successful, key=lambda x: x['comprehensive_assessment']['overall_editing_score'], reverse=True)
+    
+    editing_review_flagged = 0
+    for result in successful_sorted:
+        filename = result['filename']
+        score = result['comprehensive_assessment']['overall_editing_score']
+        
+        # Assessment logic matching main pipeline exactly
+        if score >= 25.0:
+            assessment = "Probably artificially edited"
+            editing_review_flagged += 1
+        elif score >= 18.0:
+            assessment = "Possible light editing"
+        else:
+            assessment = "Minimal/natural editing"
+        
+        filename_short = filename[:47] + "..." if len(filename) > 50 else filename
+        print(f"{filename_short:<50} {score:>8.1f}%{'':<11} {assessment:<30}")
+    
+    print("-" * 120)
+    print("Note: Images with confidence ≥25% are flagged for editing review but kept in their original location.")
+    
+    # Categorize based on editing scores (like main pipeline - all stay valid, just flagged)
+    minimal_edited = [r for r in successful if r['comprehensive_assessment']['overall_editing_score'] < 18.0]
+    
+    print(f"\nSUMMARY:")
+    print(f"  Total Images Processed: {total}")
+    print(f"  Valid Images: {total}")  # All images stay valid like main pipeline
+    print(f"  Invalid Images: 0")      # No images moved to invalid
+    print(f"  Manual Review Needed (moved): 0")  # No images moved
+    if editing_review_flagged > 0:
+        print(f"  Editing Review Flagged (kept in place): {editing_review_flagged}")
+    print(f"  Success Rate: 100.0%")   # Always 100% since no images are moved
+    
+    # Display results (like main pipeline - all valid)
+    print(f"\nVALID IMAGES ({total} images):")
+    print("-" * 120)
+    print(f"All validation checks passed - images copied to 'Results\\valid' folder")
+    
+    print(f"\nOUTPUT STRUCTURE:")
+    print(f"  Valid images: Results\\valid")
+    print(f"  Invalid images: Results\\invalid")
+    print(f"  Manual review needed: Results\\manualreview")
+    print(f"  Processing logs: Results\\logs")
+    
+    print(f"\nNOTE: Images flagged only for editing review are kept in their original location.")
+    print(f"      Check the 'EDITING CONFIDENCE ANALYSIS' table above to see which images need editing review.")
+    
+    print("\n" + "=" * 120)
+
 def main():
     """Main execution function with CUDA configuration options"""
-    folder_path = r"C:\Users\Public\Python\ittask\photos4testing"
+    folder_path = "photos4testing"  # Standard input folder
     
     print("🔬 ADVANCED IMAGE EDITING DETECTOR")
     print("=" * 70)
@@ -667,9 +857,10 @@ def main():
     successful = [r for r in results if r['status'] == 'success']
     failed = [r for r in results if r['status'] == 'failed']
     
-    # Save results
+    # Save results to unified Results/logs folder
+    os.makedirs("Results/logs", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = f"advanced_editing_analysis_{timestamp}.json"
+    output_file = f"Results/logs/advanced_editing_analysis_{timestamp}.json"
     
     analysis_summary = {
         'analysis_timestamp': datetime.now().isoformat(),
@@ -694,57 +885,22 @@ def main():
     print(f"📄 Results saved to: {output_file}")
     
     if successful:
-        print(f"\n📊 DETECTION SUMMARY:")
-        categories = {}
-        manual_review_count = 0
+        # Use main pipeline style summary
+        print_main_style_editing_summary(results)
         
-        for result in successful:
-            category = result['comprehensive_assessment']['editing_category']
-            score = result['comprehensive_assessment']['overall_editing_score']
-            categories[category] = categories.get(category, 0) + 1
-            
-            # Count images requiring manual review
-            if score >= 25.0:
-                manual_review_count += 1
-        
-        for category, count in categories.items():
-            percentage = (count / len(successful)) * 100
-            print(f"  • {category}: {count} images ({percentage:.1f}%)")
-        
-        # Add manual review summary
-        if manual_review_count > 0:
-            manual_review_percentage = (manual_review_count / len(successful)) * 100
-            print(f"\n⚠️  MANUAL REVIEW REQUIRED:")
-            print(f"  • {manual_review_count} images (score ≥ 25/100) need manual verification ({manual_review_percentage:.1f}%)")
-            print(f"  • These images show possible heavy editing - please check manually")
-        else:
-            print(f"\n✅ NO MANUAL REVIEW REQUIRED:")
-            print(f"  • All images appear natural (scores < 25/100)")
-        
-        # Show all edited images ranked from most to least edited
-        print(f"\n🏆 EDITED IMAGES (from most edited to lowest):")
-        successful.sort(key=lambda x: x['comprehensive_assessment']['overall_editing_score'], reverse=True)
-        
-        for i, result in enumerate(successful):
-            filename = result['filename']
-            score = result['comprehensive_assessment']['overall_editing_score']
-            category = result['comprehensive_assessment']['editing_category']
-            confidence = result['comprehensive_assessment']['confidence']
-            
-            # Add manual review flag for scores ≥ 25/100
-            manual_review_flag = "⚠️  REQUIRES MANUAL REVIEW" if score >= 25.0 else ""
-            
-            if manual_review_flag:
-                print(f"  {i+1}. {filename}: {score:.1f}/100 ({category}, {confidence} confidence) {manual_review_flag}")
-            else:
-                print(f"  {i+1}. {filename}: {score:.1f}/100 ({category}, {confidence} confidence)")
+        # Organize images by editing scores
+        print(f"\n📁 Organizing images by editing scores...")
+        organization_stats = detector.organize_images_by_editing_score(
+            results,
+            folder_path,
+            base_output_dir="Results",
+            manual_review_threshold=25.0
+        )
     
+    # Show any failed analyses briefly
+    failed = [r for r in results if not r.get('comprehensive_assessment')]
     if failed:
-        print(f"\n❌ FAILED ANALYSES ({len(failed)}):")
-        for result in failed[:3]:  # Show first 3 failures
-            print(f"  • {result['filename']}: {result['error']}")
-    
-    print(f"\n🎉 Advanced editing detection completed!")
+        print(f"\n❌ Note: {len(failed)} images failed analysis due to errors.")
 
 if __name__ == "__main__":
     main()

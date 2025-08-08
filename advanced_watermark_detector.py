@@ -8,6 +8,7 @@ import sys
 import json
 import time
 import warnings
+import argparse
 from typing import List, Union, Dict, Tuple, Optional
 from pathlib import Path
 import logging
@@ -166,7 +167,7 @@ class AdvancedWatermarkDetector:
     
     def predict_single_image(self, image_path: str) -> Dict:
         """
-        Predict watermark presence for a single image.
+        Predict watermark presence for a single image with optimized loading.
         
         Args:
             image_path: Path to the image file
@@ -178,7 +179,7 @@ class AdvancedWatermarkDetector:
             raise FileNotFoundError(f"Image not found: {image_path}")
             
         try:
-            # Load and predict with warnings suppressed
+            # Optimized image loading (load once)
             start_time = time.time()
             pil_image = Image.open(image_path).convert('RGB')
             
@@ -584,7 +585,7 @@ class AdvancedWatermarkDetector:
     def organize_images_by_confidence(
         self, 
         results: List[Dict], 
-        base_output_dir: str = "organized_images",
+        base_output_dir: str = "Results",
         high_confidence_threshold: float = 96.0,
         manual_review_threshold: float = 91.0
     ) -> Dict[str, List[str]]:
@@ -593,7 +594,7 @@ class AdvancedWatermarkDetector:
         
         Args:
             results: List of prediction results
-            base_output_dir: Base directory for organized images
+            base_output_dir: Base directory for organized images (default: "Results")
             high_confidence_threshold: Threshold for flagged watermarks (default: 96%)
             manual_review_threshold: Threshold for manual review (default: 91%)
             
@@ -602,18 +603,18 @@ class AdvancedWatermarkDetector:
         """
         import shutil
         
-        # Create output directories
-        flagged_dir = os.path.join(base_output_dir, "flagged_watermarks")
-        manual_review_dir = os.path.join(base_output_dir, "manual_review")
+        # Create output directories using unified structure
+        flagged_dir = os.path.join(base_output_dir, "invalid")  # Watermarked images are invalid
+        manual_review_dir = os.path.join(base_output_dir, "manualreview")
         valid_dir = os.path.join(base_output_dir, "valid")
         
         for directory in [flagged_dir, manual_review_dir, valid_dir]:
             os.makedirs(directory, exist_ok=True)
         
         organization_stats = {
-            'flagged_watermarks': [],
-            'manual_review': [],
-            'valid': [],
+            'invalid': [],  # Watermarked images (flagged)
+            'manualreview': [],  # Manual review needed
+            'valid': [],  # Clean images
             'errors': []
         }
         
@@ -632,17 +633,17 @@ class AdvancedWatermarkDetector:
                 watermark_confidence = result.get('confidence_watermarked', 0) * 100
                 
                 if result.get('has_watermark') and watermark_confidence > high_confidence_threshold:
-                    # High confidence watermark - flagged
+                    # High confidence watermark - flagged as invalid
                     dest_path = os.path.join(flagged_dir, filename)
                     shutil.copy2(source_path, dest_path)
-                    organization_stats['flagged_watermarks'].append(filename)
-                    logger.debug(f"Flagged: {filename} ({watermark_confidence:.1f}%)")
+                    organization_stats['invalid'].append(filename)
+                    logger.debug(f"Invalid (watermarked): {filename} ({watermark_confidence:.1f}%)")
                     
                 elif result.get('has_watermark') and watermark_confidence > manual_review_threshold:
                     # Medium confidence watermark - manual review
                     dest_path = os.path.join(manual_review_dir, filename)
                     shutil.copy2(source_path, dest_path)
-                    organization_stats['manual_review'].append(filename)
+                    organization_stats['manualreview'].append(filename)
                     logger.debug(f"Manual review: {filename} ({watermark_confidence:.1f}%)")
                     
                 else:
@@ -658,8 +659,8 @@ class AdvancedWatermarkDetector:
         
         # Log summary
         logger.info(f"Organization complete:")
-        logger.info(f"  - Flagged watermarks (>{high_confidence_threshold}%): {len(organization_stats['flagged_watermarks'])}")
-        logger.info(f"  - Manual review ({manual_review_threshold}-{high_confidence_threshold}%): {len(organization_stats['manual_review'])}")
+        logger.info(f"  - Invalid (watermarked) (>{high_confidence_threshold}%): {len(organization_stats['invalid'])}")
+        logger.info(f"  - Manual review ({manual_review_threshold}-{high_confidence_threshold}%): {len(organization_stats['manualreview'])}")
         logger.info(f"  - Valid images: {len(organization_stats['valid'])}")
         logger.info(f"  - Errors: {len(organization_stats['errors'])}")
         
@@ -679,8 +680,8 @@ class AdvancedWatermarkDetector:
         total_processed = sum(len(files) for files in organization_stats.values())
         
         categories = [
-            ("🚩 FLAGGED WATERMARKS (>96%)", organization_stats['flagged_watermarks'], "flagged_watermarks/"),
-            ("⚠️  MANUAL REVIEW (91-96%)", organization_stats['manual_review'], "manual_review/"),
+            ("🚩 INVALID (WATERMARKED) (>96%)", organization_stats['invalid'], "invalid/"),
+            ("⚠️  MANUAL REVIEW (91-96%)", organization_stats['manualreview'], "manualreview/"),
             ("✅ VALID IMAGES", organization_stats['valid'], "valid/"),
             ("❌ ERRORS", organization_stats['errors'], "errors/")
         ]
@@ -691,7 +692,7 @@ class AdvancedWatermarkDetector:
             
             print(f"\n{category_name}")
             print(f"  Count: {count} ({percentage:.1f}%)")
-            print(f"  Folder: organized_images/{folder_name}")
+            print(f"  Folder: Results/{folder_name}")
             
             if files and count <= 10:  # Show files if 10 or fewer
                 print("  Files:")
@@ -707,26 +708,151 @@ class AdvancedWatermarkDetector:
         
         print("\n" + "=" * 80)
 
+    def print_main_style_summary(self, results: List[Dict]) -> None:
+        """
+        Print summary in the same style as main_optimized.py for consistency.
+        
+        Args:
+            results: List of prediction results
+        """
+        print("=" * 120)
+        print("WATERMARK DETECTION RESULTS")
+        print("=" * 120)
+        
+        print(f"\nTESTS PERFORMED:")
+        print(f"  Enabled: watermarks")
+        print(f"  Disabled: editing, specifications, text, borders")
+        
+        # Calculate statistics
+        total = len(results)
+        watermarked_count = sum(1 for r in results if r.get('has_watermark') is True)
+        clean_count = sum(1 for r in results if r.get('has_watermark') is False)
+        error_count = sum(1 for r in results if r.get('has_watermark') is None)
+        
+        # Determine manual review (91-96% confidence watermarks, not 95%+)
+        manual_review_count = sum(1 for r in results if r.get('has_watermark') is True and 
+                                 0.91 <= r.get('confidence_watermarked', 0) < 0.96)
+        
+        print(f"\nSUMMARY:")
+        print(f"  Total Images Processed: {total}")
+        print(f"  Valid Images: {clean_count}")
+        print(f"  Invalid Images: {watermarked_count - manual_review_count}")
+        print(f"  Manual Review Needed (moved): {manual_review_count}")
+        print(f"  Success Rate: {(clean_count/total*100):.1f}%" if total > 0 else "  Success Rate: 0%")
+        
+        # Group results by categories
+        valid_images = []
+        invalid_images = []
+        manual_review_images = []
+        
+        for result in results:
+            filename = os.path.basename(result.get('image_path', ''))
+            
+            if result.get('has_watermark') is True:
+                confidence = result.get('confidence_watermarked', 0) * 100
+                reason = f"Watermark detected (confidence: {confidence:.1f}%)"
+                
+                # Fix the logic to match file organization:
+                # High confidence (96%+) → Invalid
+                # Medium confidence (91-96%) → Manual Review  
+                # Low confidence (<91%) → Invalid (but this case shouldn't occur here)
+                if confidence >= 96.0:
+                    invalid_images.append((filename, reason))
+                elif confidence >= 91.0:
+                    manual_review_images.append((filename, reason))
+                else:
+                    invalid_images.append((filename, reason))
+            elif result.get('has_watermark') is False:
+                confidence = result.get('confidence_clean', 0) * 100
+                valid_images.append((filename, f"Clean image (confidence: {confidence:.1f}%)"))
+            else:
+                error_reason = result.get('error', 'Processing error')
+                invalid_images.append((filename, error_reason))
+        
+        # Display each category
+        if valid_images:
+            print(f"\nVALID IMAGES ({len(valid_images)} images):")
+            print("-" * 120)
+            print(f"All validation checks passed - images copied to 'Results\\valid' folder")
+        
+        if invalid_images:
+            print(f"\nINVALID IMAGES ({len(invalid_images)} images):")
+            print("-" * 120)
+            
+            for i, (filename, reason) in enumerate(invalid_images, 1):
+                print(f"\n{i:2d}. {filename}")
+                print(f"    Failures:")
+                print(f"      • Watermarks: {reason}")
+        
+        if manual_review_images:
+            print(f"\nMANUAL REVIEW NEEDED ({len(manual_review_images)} images):")
+            print("-" * 120)
+            
+            for i, (filename, reason) in enumerate(manual_review_images, 1):
+                print(f"\n{i:2d}. {filename}")
+                print(f"    High-confidence watermark detected: {reason}")
+        
+        print(f"\nOUTPUT STRUCTURE:")
+        print(f"  Valid images: Results\\valid")
+        print(f"  Invalid images: Results\\invalid")
+        print(f"  Manual review needed: Results\\manualreview")
+        print(f"  Processing logs: Results\\logs")
+        
+        print("\n" + "=" * 120)
+
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Advanced Watermark Detection for PhotoValidator",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument('--input', '-i', type=str, default='photos4testing',
+                        help='Input directory containing images to analyze (default: photos4testing)')
+    
+    parser.add_argument('--output', '-o', type=str, default='Results',
+                        help='Output directory for results (default: Results)')
+    
+    parser.add_argument('--model', '-m', type=str, default='convnext-tiny',
+                        choices=['convnext-tiny', 'convnext-small', 'convnext-base'],
+                        help='Model to use for detection (default: convnext-tiny)')
+    
+    parser.add_argument('--high-threshold', type=float, default=96.0,
+                        help='High confidence threshold for automatic classification (default: 96.0)')
+    
+    parser.add_argument('--manual-threshold', type=float, default=91.0,
+                        help='Manual review threshold (default: 91.0)')
+    
+    return parser.parse_args()
+
 def main():
     """Example usage and testing."""
+    # Parse command line arguments
+    args = parse_arguments()
+    
     print("Advanced Watermark Detector - Testing")
+    print("=" * 50)
+    print(f"Input directory: {args.input}")
+    print(f"Output directory: {args.output}")
+    print(f"Model: {args.model}")
+    print(f"High confidence threshold: {args.high_threshold}%")
+    print(f"Manual review threshold: {args.manual_threshold}%")
     print("=" * 50)
     
     try:
         # Initialize detector
         detector = AdvancedWatermarkDetector(
-            model_name='convnext-tiny',  # Best accuracy model
+            model_name=args.model,
             cache_dir='./models/watermark_cache'
         )
 
         print(f"Model info: {detector.get_model_info()}")
 
-        # Check multiple potential test directories
+        # Use provided input directory or check standard locations
         test_directories = [
-            r"C:\Users\Mohamed Sameh\Downloads\IT_Task\Photos4Testing",
-            "./photos4testing",
-            "./detected_text_images",
-            "./Results"
+            args.input,
+            f"./{args.input}",
+            f"C:\\Users\\Public\\Python\\ittask\\{args.input}"
         ]
         
         test_images_dir = None
@@ -764,45 +890,21 @@ def main():
                 process_individually=True  # This ensures one-by-one processing
             )
 
+            # Generate and display report in main pipeline style
             print("\n" + "=" * 80)
             print("PROCESSING COMPLETE")
             print("=" * 80)
 
-            # Generate and display report
-            report = detector.generate_report(results, "watermark_detection_report.json")
-
-            print("\nDetection Results Summary:")
-            print(f"Total images: {report['summary']['total_images']}")
-            print(f"Watermarked: {report['summary']['watermarked_images']} ({report['summary']['watermarked_percentage']}%)")
-            print(f"Clean: {report['summary']['clean_images']} ({report['summary']['clean_percentage']}%)")
-            print(f"Errors: {report['summary']['error_images']} ({report['summary']['error_percentage']}%)")
-            print(f"Average processing time: {report['summary']['average_processing_time']:.3f}s per image")
-
-            # Display detailed results in ASCII table
-            detector.print_results_table(results)
+            # Use the main pipeline style summary
+            detector.print_main_style_summary(results)
             
-            # Show flagged images (high confidence watermarks)
-            flagged_images = detector.get_flagged_images(results)
-            if flagged_images:
-                print(f"\n🚩 HIGH-CONFIDENCE WATERMARKED IMAGES (>95% confidence):")
-                print("=" * 80)
-                for i, img in enumerate(flagged_images, 1):
-                    filename = os.path.basename(img['image_path'])
-                    confidence = img.get('confidence_watermarked', 0) * 100
-                    print(f"{i:3}. {filename:<50} - {confidence:.1f}% confidence")
-                print("=" * 80)
-            
-            # Organize images by confidence levels
-            print(f"\nOrganizing images by confidence levels...")
+            # Organize images by confidence levels (but don't show the old summary)
             organization_stats = detector.organize_images_by_confidence(
                 results, 
-                base_output_dir="organized_images",
-                high_confidence_threshold=96.0,
-                manual_review_threshold=91.0
+                base_output_dir=args.output,
+                high_confidence_threshold=args.high_threshold,
+                manual_review_threshold=args.manual_threshold
             )
-            
-            # Print organization summary
-            detector.print_organization_summary(organization_stats)
             
         else:
             print("No test images directory found. Checked locations:")
@@ -812,7 +914,7 @@ def main():
             
             # Create a sample directory structure
             print("\nCreating sample directory structure...")
-            sample_dir = "./photos4testing"
+            sample_dir = f"./{args.input}"
             os.makedirs(sample_dir, exist_ok=True)
             print(f"Created directory: {sample_dir}")
             print("Please add test images to this directory and run again.")

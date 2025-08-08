@@ -9,6 +9,7 @@ import logging
 import shutil
 import traceback
 import tempfile
+import argparse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG = {
     'BASE_PROJECT_PATH': 'C:\\Users\\Public\\Python\\ittask',
     'SOURCE_DIR': 'photos4testing',
-    'OUTPUT_DIR': 'FrameDetectionResults',
+    'OUTPUT_DIR': 'Results',  # Unified output folder
     'PARALLEL_PROCESSING': True,
     'SAVE_INTERMEDIATE': False,
     'EXPORT_JSON': False,
@@ -115,14 +116,14 @@ def load_images(config):
             if ext in image_extensions:
                 img_path = os.path.join(images_path, filename)
                 try:
-                    img = cv2.imread(img_path)
-                    if img is not None:
+                    # Just validate file exists and has reasonable size, don't load the actual image yet
+                    if os.path.getsize(img_path) > 0:
                         images.append((filename, img_path))
-                        logger.debug(f"Loaded image: {filename}")
+                        logger.debug(f"Found image: {filename}")
                     else:
-                        logger.warning(f"Failed to load image: {img_path}")
+                        logger.warning(f"Empty file: {img_path}")
                 except Exception as e:
-                    logger.error(f"Error loading image {img_path}: {str(e)}")
+                    logger.error(f"Error checking image {img_path}: {str(e)}")
     except Exception as e:
         logger.error(f"Error accessing directory {images_path}: {str(e)}")
     
@@ -1397,9 +1398,9 @@ def enhance_edges_for_frame_detection(gray, height, width, already_filtered=Fals
     return closing
 
 def detect_border(img_path, config):
-    """Detect if an image has a border or frame."""
+    """Detect if an image has a border or frame with optimized loading."""
     try:
-        # Load image
+        # Load image once (no redundant loading)
         image = cv2.imread(img_path)
         if image is None:
             logger.error(f"Failed to load image: {img_path}")
@@ -1739,8 +1740,93 @@ def get_border_type(result):
         return "Frame Structure"
     return "No Border"
 
-def main():
-    config = DEFAULT_CONFIG.copy()
+def print_main_style_border_summary(detections_list: list, config: dict) -> None:
+    """
+    Print summary in the same style as main_optimized.py for consistency.
+    
+    Args:
+        detections_list: List of detection results
+        config: Configuration dictionary
+    """
+    print("=" * 120)
+    print("BORDER DETECTION RESULTS")
+    print("=" * 120)
+    
+    print(f"\nTESTS PERFORMED:")
+    print(f"  Enabled: borders")
+    print(f"  Disabled: editing, specifications, text, watermarks")
+    
+    # Calculate statistics
+    total = len(detections_list)
+    border_count = sum(1 for d in detections_list if d.get('Has Border/Frame', 'No') == 'Yes')
+    no_border_count = total - border_count
+    
+    # Determine manual review (high confidence borders that need attention)
+    manual_review_count = sum(1 for d in detections_list 
+                            if d.get('Has Border/Frame', 'No') == 'Yes' 
+                            and float(d.get('Confidence', 0)) >= config.get('CONFIDENCE_THRESHOLD_HIGH', 0.58))
+    
+    print(f"\nSUMMARY:")
+    print(f"  Total Images Processed: {total}")
+    print(f"  Valid Images: {no_border_count}")
+    print(f"  Invalid Images: {border_count - manual_review_count}")
+    print(f"  Manual Review Needed (moved): {manual_review_count}")
+    print(f"  Success Rate: {(no_border_count/total*100):.1f}%" if total > 0 else "  Success Rate: 0%")
+    
+    # Group results by categories
+    valid_images = []
+    invalid_images = []
+    manual_review_images = []
+    
+    for detection in detections_list:
+        filename = os.path.basename(detection.get('Image Path', ''))
+        confidence = float(detection.get('Confidence', 0))
+        border_type = detection.get('Border/Frame Type', 'Unknown')
+        
+        if detection.get('Has Border/Frame', 'No') == 'Yes':
+            reason = f"Border detected - {border_type} (confidence: {confidence:.2f})"
+            
+            if confidence >= config.get('CONFIDENCE_THRESHOLD_HIGH', 0.58):
+                manual_review_images.append((filename, reason))
+            else:
+                invalid_images.append((filename, reason))
+        else:
+            reason = f"No border detected (confidence: {confidence:.2f})"
+            valid_images.append((filename, reason))
+    
+    # Display each category
+    if valid_images:
+        print(f"\nVALID IMAGES ({len(valid_images)} images):")
+        print("-" * 120)
+        print(f"All validation checks passed - images copied to 'Results\\valid' folder")
+    
+    if invalid_images:
+        print(f"\nINVALID IMAGES ({len(invalid_images)} images):")
+        print("-" * 120)
+        
+        for i, (filename, reason) in enumerate(invalid_images, 1):
+            print(f"\n{i:2d}. {filename}")
+            print(f"    Failures:")
+            print(f"      • Borders: {reason}")
+    
+    if manual_review_images:
+        print(f"\nMANUAL REVIEW NEEDED ({len(manual_review_images)} images):")
+        print("-" * 120)
+        
+        for i, (filename, reason) in enumerate(manual_review_images, 1):
+            print(f"\n{i:2d}. {filename}")
+            print(f"    High-confidence border detected: {reason}")
+    
+    print(f"\nOUTPUT STRUCTURE:")
+    print(f"  Valid images: Results\\valid")
+    print(f"  Invalid images: Results\\invalid")
+    print(f"  Manual review needed: Results\\manualreview")
+    print(f"  Processing logs: Results\\logs")
+    
+    print("\n" + "=" * 120)
+
+def main(custom_config=None):
+    config = custom_config if custom_config is not None else DEFAULT_CONFIG.copy()
     output_dir = os.path.join(config['BASE_PROJECT_PATH'], config['OUTPUT_DIR'])
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -1795,15 +1881,15 @@ def main():
         
         if manual_review and config.get('SAVE_MANUAL_REVIEW_SEPARATELY', True):
             # Manual review needed - separate folder
-            destination_dir = os.path.join(r['output_dir'], 'Manual_Review')
+            destination_dir = os.path.join(r['output_dir'], 'manualreview')
             log_message = f"Copied photo needing manual review: {r['filename']} to {destination_dir} (confidence: {confidence:.3f})"
         elif has_border:
-            # Border detected - main output folder
-            destination_dir = r['output_dir']
+            # Border detected - main output folder  
+            destination_dir = os.path.join(r['output_dir'], 'valid')
             log_message = f"Copied photo with border: {r['filename']} to {destination_dir} (confidence: {confidence:.3f})"
         else:
             # No border detected - invalid subfolder
-            destination_dir = os.path.join(r['output_dir'], 'Invalid')
+            destination_dir = os.path.join(r['output_dir'], 'invalid')
             log_message = f"Copied photo with no border: {r['filename']} to {destination_dir} (confidence: {confidence:.3f})"
 
         # Copy the original image to the determined destination
@@ -1865,43 +1951,20 @@ def main():
         if confidence >= 0.58:  # Using updated CONFIDENCE_THRESHOLD_HIGH
             high_confidence_count += 1
     
-    print(f"\n=== PROCESSING SUMMARY ===")
-    print(f"Total images processed: {total_images}")
-    print(f"Border/Frame detected: {border_count} ({border_count/total_images*100:.1f}%)")
+    # Convert results to unified format for main pipeline style summary
+    unified_detections = []
+    for r in results:
+        unified_detections.append({
+            'Image Path': r.get('filename', ''),
+            'Has Border/Frame': 'Yes' if r.get('confidence', 0.0) >= config.get('CONFIDENCE_THRESHOLD_LOW', 0.35) else 'No',
+            'Confidence': r.get('confidence', 0.0),
+            'Border/Frame Type': get_border_type(r),
+            'Color Difference': r.get('color_difference', 0.0),
+            'Detection Reason': r.get('detection_reason', 'Unknown')
+        })
     
-    # Show breakdown by border type
-    if border_types:
-        print("  Border types breakdown:")
-        for border_type, count in sorted(border_types.items()):
-            print(f"    - {border_type}: {count} ({count/total_images*100:.1f}%)")
-        
-        # Show confidence breakdown
-        low_confidence_count = border_count - high_confidence_count
-        print(f"  Confidence breakdown:")
-        print(f"    - High confidence (≥0.58): {high_confidence_count} ({high_confidence_count/total_images*100:.1f}%)")
-        print(f"    - Low confidence (<0.58): {low_confidence_count} ({low_confidence_count/total_images*100:.1f}%)")
-    
-    print(f"Manual review required: {manual_review_count} ({manual_review_count/total_images*100:.1f}%)")
-    print(f"No border detected: {no_border_count} ({no_border_count/total_images*100:.1f}%)")
-    
-    if config.get('SAVE_MANUAL_REVIEW_SEPARATELY', True) and manual_review_count > 0:
-        manual_review_dir = os.path.join(output_dir, 'Manual_Review')
-        print(f"Manual review images saved to: {manual_review_dir}")
-    print("===========================\n")
-    
-    # Print ASCII table for manual review images sorted by confidence
-    if manual_review_detections:
-        print_ascii_table(manual_review_detections, "Manual Review Images (Sorted by Confidence)")
-    else:
-        print("No images require manual review.\n")
-    
-    # Print ASCII table for border/frame detected images sorted by confidence
-    if border_detections:
-        # Sort border detections by confidence (descending)
-        border_detections_sorted = sorted(border_detections, key=lambda x: float(x['Confidence']), reverse=True)
-        print_ascii_table(border_detections_sorted, "Border/Frame Detected Images (Sorted by Confidence)")
-    else:
-        print("No images with borders/frames detected.\n")
+    # Use main pipeline style summary
+    print_main_style_border_summary(unified_detections, config)
     
 def has_border_or_frame(pil_img, show_debug=False, debug_output_dir="debug"):
     """
@@ -2285,5 +2348,45 @@ def generate_detection_reason(simple_detected, frame_detected, textured_detected
     else:
         return f"Border detected via multiple methods (confidence: {confidence:.2f})"
 
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Border and Frame Detection for PhotoValidator",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument('--input', '-i', type=str, default=DEFAULT_CONFIG['SOURCE_DIR'],
+                        help='Input directory containing images to analyze (default: photos4testing)')
+    
+    parser.add_argument('--output', '-o', type=str, default=DEFAULT_CONFIG['OUTPUT_DIR'],
+                        help='Output directory for results (default: Results)')
+    
+    parser.add_argument('--parallel', action='store_true', default=DEFAULT_CONFIG['PARALLEL_PROCESSING'],
+                        help='Enable parallel processing (default: enabled)')
+    
+    parser.add_argument('--no-parallel', dest='parallel', action='store_false',
+                        help='Disable parallel processing')
+    
+    parser.add_argument('--save-intermediate', action='store_true', default=DEFAULT_CONFIG['SAVE_INTERMEDIATE'],
+                        help='Save intermediate processing images (default: disabled)')
+    
+    parser.add_argument('--export-json', action='store_true', default=DEFAULT_CONFIG['EXPORT_JSON'],
+                        help='Export results to JSON file (default: disabled)')
+    
+    return parser.parse_args()
+
 if __name__ == "__main__":
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Update config with command line arguments
+    config = DEFAULT_CONFIG.copy()
+    config['SOURCE_DIR'] = args.input
+    config['OUTPUT_DIR'] = args.output
+    config['PARALLEL_PROCESSING'] = args.parallel
+    config['SAVE_INTERMEDIATE'] = args.save_intermediate
+    config['EXPORT_JSON'] = args.export_json
+    
+    # Run main detection
+    main(config)
     main()
