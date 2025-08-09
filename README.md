@@ -13,11 +13,34 @@ This project provides a comprehensive, high-performance image processing and fil
 - **Text Detection**: State-of-the-art PaddleOCR with DB (Differentiable Binarization) model
 - **Watermark Detection**: CNN-based watermark identification using ConvNeXt architecture
 - **Border Detection**: Multi-algorithm approach with adaptive thresholds
-- **Quality Analysis**: PyIQA integration with BRISQUE, NIQE, and other metrics
+- **Editing & Quality Analysis**: Fast default PyIQA model trio (BRISQUE + NIQE + CLIPIQA) with optional full suite (MUSIQ, DBCNN, HyperIQA)
+- **Adaptive Scoring**: Empirical normalization + multi-feature (histogram / frequency / edges) fusion
 - **Batch Processing**: Efficient processing of large image datasets
-- **Smart Organization**: Automated sorting into valid/invalid/manual-review categories
+- **Smart Organization**: Automated sorting into valid / invalid / manual-review categories
+- **Robust CLIP-IQA Handling**: Multi-attempt validation, score range checks, and fail-fast when explicitly requested
+- **Interactive or Headless Modes**: Model selection via prompt or CLI flags (`--fast`, `--models=`)
 
-## 🚀 Quick Start
+---
+
+## � Recent Enhancements (Performance & Robustness)
+
+| Area | Improvement | Impact |
+|------|-------------|--------|
+| Editing Detection | Introduced fast recommended model set (BRISQUE, NIQE, CLIPIQA) | ~40–50% faster vs full set |
+| Model Selection | Added interactive prompt + non-interactive flags (`--fast`, `--models=...`, `--source`) | Flexible automation |
+| CLIP-IQA Stability | 3-attempt guarded loading + multi-image validation + score sanity checks | Reliable inclusion when requested |
+| Scoring Logic | Empirical percentile normalization + feature fusion weighting | More discriminative editing confidence |
+| Batch Integration | Added Advanced PyIQA Mode (menu option A) using `--fast` by default | One-click accelerated review |
+| Logging & Reports | Unified JSON logs and editing confidence tables | Easier auditing |
+| Test Coverage | Added `test_clipiqa_robustness.py` for regression on loading behavior | Prevent silent degradation |
+
+Performance (example run, 177 mixed images on mid-range GPU):
+- Fast trio (BRISQUE + NIQE + CLIPIQA): ~2.2 images/sec, ~0.39 GB GPU allocated
+- Full models (adds MUSIQ, DBCNN, HyperIQA): ~1.4–1.6 images/sec, ~0.65+ GB GPU allocated
+
+---
+
+## �🚀 Quick Start
 
 ### Manual Setup
 
@@ -102,6 +125,8 @@ PhotoValidator/
 ├── advanced_watermark_detector.py    # Watermark detection system
 ├── border_detector.py               # Border and frame detection
 ├── advanced_pyiqa_detector.py       # Image quality analysis
+├── pyiqa_model_combinations_test.py # Model combination testing & diagnostics
+├── test_clipiqa_robustness.py       # CLIP-IQA loading validation tests
 ├── Spec_detector.py                 # Image specification analysis
 ├── requirements.txt                 # Python dependencies
 ├── README.md                        # This documentation
@@ -113,6 +138,8 @@ PhotoValidator/
 │   ├── invalid/                    # Invalid images
 │   ├── manualreview/               # Images requiring manual review
 │   └── logs/                       # Processing reports and logs
+│       ├── *.md                    # Enhancement documentation & analysis
+│       └── *.json                  # Machine-readable processing logs
 ├── models/                         # Downloaded models cache
 ├── models_cache/                   # Model cache directory
 └── watermark-detection/            # Watermark detection submodule
@@ -165,6 +192,64 @@ options:
   --quiet, -q           Suppress detailed progress output
 ```
 
+### Advanced PyIQA Detector (Dedicated Editing Analysis)
+
+`advanced_pyiqa_detector.py` provides deeper editing forensics with selectable quality model sets.
+
+CLI Flags (headless-friendly):
+
+```
+python advanced_pyiqa_detector.py [--fast] [--models=LIST] [--source DIR] [--cpu] [--gpu=N] [--diagnostics]
+
+   --fast             Use fast recommended trio (brisque, niqe, clipiqa) and skip prompt
+   --models=CSV       Explicit comma-separated list (e.g. --models=brisque,niqe,musiq)
+   --source DIR       Override input folder (default: photos4testing)
+   --cpu              Force CPU mode
+   --gpu=N            Select GPU index
+   --diagnostics      Run internal scoring validation suite
+```
+
+Interactive Model Prompt (when no `--fast` / `--models` supplied):
+1. Fast trio (BRISQUE + NIQE + CLIPIQA) ⚡ (default)
+2. All models (adds MUSIQ, DBCNN, HyperIQA)
+3. Select specific models
+4. Exclude specific models
+
+Examples:
+```bash
+# Fast default (no prompt)
+python advanced_pyiqa_detector.py --fast
+
+# Specific models (custom subset)
+python advanced_pyiqa_detector.py --models=brisque,niqe,musiq
+
+# Full diagnostic run on alternate folder
+python advanced_pyiqa_detector.py --fast --source ./incoming_batch --diagnostics
+```
+
+Batch Integration:
+- `PhotoValidator.bat` option [A] now launches the advanced detector with `--fast` automatically.
+- Normal editing checks inside `main_optimized.py` also use the fast trio by default for throughput.
+
+### Testing & Diagnostic Tools
+
+Additional tools for model validation and performance analysis:
+
+```bash
+# Test all PyIQA model combinations with confidence analysis
+python pyiqa_model_combinations_test.py [--models=LIST] [--source DIR]
+
+# Validate CLIP-IQA robustness and loading behavior
+python test_clipiqa_robustness.py
+
+# Diagnostic run with internal validation checks
+python advanced_pyiqa_detector.py --diagnostics
+```
+
+These tools help verify model performance, troubleshoot loading issues, and compare different model combinations for your specific use case.
+
+---
+
 #### Basic Usage Examples
 
 ```bash
@@ -211,6 +296,26 @@ Images are automatically sorted into folders based on validation results:
 - Review the editing confidence analysis in the console output
 - Keep original file organization intact
 - Only move files that have actual validation failures
+
+#### Updated Threshold Clarification
+There are two contexts:
+
+| Context | Thresholds | Action |
+|---------|------------|--------|
+| Main pipeline (integrated) | ≥25% = moved to INVALID; 20–25% = MANUAL REVIEW | Conservative gating for ingestion workflows |
+| Advanced detector (stand‑alone script) | ≥33% = move to manual review; 27–33% = flagged (kept); <27% = minimal | Finer granularity for forensic review |
+
+These differing bands reflect different operational intents (strict ingestion vs analytical triage). Adjust inside code if your workflow needs harmonization.
+
+#### Fast Model Set vs Full Suite
+| Mode | Models Used | Recommended When |
+|------|-------------|------------------|
+| Fast (default) | BRISQUE, NIQE, CLIPIQA | Large batches / latency-sensitive pipelines |
+| Full | + MUSIQ, DBCNN, HyperIQA | Maximum sensitivity / research comparisons |
+
+You can always override via `--models=` or interactively.
+
+---
 
 ### Processing Reports
 
