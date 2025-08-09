@@ -551,7 +551,9 @@ class OptimizedDetectorWrapper:
                     from advanced_pyiqa_detector import AdvancedEditingDetector
                     self._editing_detector = AdvancedEditingDetector(
                         force_cpu=True,  # Force CPU for stability
-                        quiet=True       # Suppress initialization output
+                        quiet=True,      # Suppress initialization output
+                        # Use FAST recommended models by default for speed
+                        selected_models=['brisque', 'niqe', 'clipiqa']
                     )
                     # Silent success - no log message
                 except Exception as init_error:
@@ -734,21 +736,32 @@ class OptimizedDetectorWrapper:
             editing_confidence = comprehensive_assessment.get('overall_editing_score', 0.0)
             editing_category = comprehensive_assessment.get('editing_category', 'Unknown')
             
-            # Threshold for manual review: 25% or higher editing confidence
-            EDITING_THRESHOLD = 25.0
+            # NEW THRESHOLDS: 25+ = Invalid, 20-25 = Manual Review, <20 = Valid
+            EDITING_INVALID_THRESHOLD = 25.0
+            EDITING_MANUAL_REVIEW_THRESHOLD = 20.0
             
-            if editing_confidence >= EDITING_THRESHOLD:
-                # High editing confidence - flag for manual review
+            if editing_confidence >= EDITING_INVALID_THRESHOLD:
+                # High editing confidence (25%+) - mark as invalid
+                return {
+                    'passed': False,  # False = invalid
+                    'reason': f"High editing confidence detected: {editing_confidence:.1f}% (threshold: {EDITING_INVALID_THRESHOLD}%)",
+                    'editing_confidence': editing_confidence,
+                    'editing_category': editing_category,
+                    'needs_manual_review': False,
+                    'insights': self._generate_editing_insights(result)
+                }
+            elif editing_confidence >= EDITING_MANUAL_REVIEW_THRESHOLD:
+                # Medium editing confidence (20-25%) - manual review needed
                 return {
                     'passed': None,  # None = manual review needed
-                    'reason': f"editing",
+                    'reason': f"Medium editing confidence detected: {editing_confidence:.1f}% (requires manual review)",
                     'editing_confidence': editing_confidence,
                     'editing_category': editing_category,
                     'needs_manual_review': True,
                     'insights': self._generate_editing_insights(result)
                 }
             else:
-                # Low editing confidence - image passes
+                # Low editing confidence (<20%) - image passes
                 return {
                     'passed': True,
                     'reason': f"Minimal editing detected (confidence: {editing_confidence:.1f}%)",

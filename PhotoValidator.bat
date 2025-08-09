@@ -69,6 +69,7 @@ echo.
 echo   [7] Custom Test Combination           
 echo   [8] System Information              
 echo   [9] View Analysis Reports            
+echo   [A] Advanced PyIQA Editing Detection  
 echo   [P] Configure Paths ^& Settings      
 echo.
 echo ═══════════════════════════════════════════════════════════════
@@ -85,6 +86,7 @@ if "%choice%"=="6" goto RUN_SPECS_CHECK
 if "%choice%"=="7" goto CUSTOM_COMBINATION
 if "%choice%"=="8" goto SYSTEM_INFO
 if "%choice%"=="9" goto VIEW_REPORTS
+if /i "%choice%"=="A" goto RUN_ADVANCED_PYIQA
 if /i "%choice%"=="P" goto CONFIGURE_PATHS
 goto INVALID_CHOICE
 
@@ -334,8 +336,8 @@ echo.
 echo Running comprehensive analysis with all available tests:
 echo   • Image Specifications Check
 echo   • Text Detection (PaddleOCR)
-echo   • Border & Frame Detection  
-echo   • Image Quality & Editing Detection
+echo   • Border ^& Frame Detection  
+echo   • Image Quality ^& Editing Detection
 echo   • Watermark Detection
 echo.
 echo Input Folder:  %INPUT_DIR%
@@ -487,6 +489,7 @@ echo Analyzing artifacts, compression, and artificial enhancements
 echo.
 echo Input Folder:  %INPUT_DIR%
 echo Output Folder: %OUTPUT_DIR%
+echo Default Model Set: BRISQUE + NIQE + CLIPIQA (FAST)
 echo.
 echo Processing images with AI quality metrics...
 echo.
@@ -618,6 +621,71 @@ if "%specs_choice%"=="2" (
 )
 if "%specs_choice%"=="3" goto RUN_SPECS_CHECK
 if /i "%specs_choice%"=="B" (
+    color %COLOR_MAIN%
+    goto MAIN_MENU
+)
+color %COLOR_MAIN%
+goto MAIN_MENU
+
+:RUN_ADVANCED_PYIQA
+color %COLOR_ANALYSIS%
+cls
+echo.
+echo ╔══════════════════════════════════════════════════════════════╗
+echo ║            ADVANCED PYIQA EDITING DETECTION                 ║
+echo ╚══════════════════════════════════════════════════════════════╝
+echo.
+echo Running advanced PyIQA-based image editing detection...
+echo This uses multiple AI quality metrics with customizable model selection.
+echo.
+echo Input Folder:  %INPUT_DIR%
+echo Output Folder: %OUTPUT_DIR%
+echo.
+echo Features:
+echo   - Multiple PyIQA quality models (BRISQUE, NIQE, MUSIQ, etc.)
+echo   - User-selectable model combinations
+echo   - Empirical thresholds and robust scoring
+echo   - Feature-based analysis integration
+echo.
+echo Starting analysis with model selection prompt...
+echo.
+echo ═══════════════════════════════════════════════════════════════
+
+REM Create output directory if it doesn't exist
+if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+
+REM Use fast recommended models by default in non-interactive mode
+"%PYTHON_PATH%" advanced_pyiqa_detector.py --fast --source "%INPUT_DIR%"
+
+echo.
+echo ═══════════════════════════════════════════════════════════════
+echo Advanced PyIQA analysis complete! Check Results folder for output.
+echo.
+echo [1] Return to Main Menu
+echo [2] View Results Folder
+echo [3] Run Another Advanced Analysis
+echo [4] Run PyIQA Model Combinations Test
+echo [B] Back to Main Menu
+echo.
+set /p advanced_choice="Select option [1-4, B]: "
+if "%advanced_choice%"=="1" (
+    color %COLOR_MAIN%
+    goto MAIN_MENU
+)
+if "%advanced_choice%"=="2" (
+    start "" "Results" 2>nul
+    color %COLOR_MAIN%
+    goto MAIN_MENU
+)
+if "%advanced_choice%"=="3" goto RUN_ADVANCED_PYIQA
+if "%advanced_choice%"=="4" (
+    echo.
+    echo Running PyIQA Model Combinations Test...
+    "%PYTHON_PATH%" pyiqa_model_combinations_test.py
+    pause
+    goto RUN_ADVANCED_PYIQA
+)
+if /i "%advanced_choice%"=="B" (
     color %COLOR_MAIN%
     goto MAIN_MENU
 )

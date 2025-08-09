@@ -725,20 +725,28 @@ class AdvancedWatermarkDetector:
         
         # Calculate statistics
         total = len(results)
-        watermarked_count = sum(1 for r in results if r.get('has_watermark') is True)
         clean_count = sum(1 for r in results if r.get('has_watermark') is False)
         error_count = sum(1 for r in results if r.get('has_watermark') is None)
         
-        # Determine manual review (91-96% confidence watermarks, not 95%+)
-        manual_review_count = sum(1 for r in results if r.get('has_watermark') is True and 
-                                 0.91 <= r.get('confidence_watermarked', 0) < 0.96)
+        # Count watermarks by confidence levels
+        high_confidence_watermarks = sum(1 for r in results if r.get('has_watermark') is True and 
+                                        r.get('confidence_watermarked', 0) >= 0.96)
+        manual_review_watermarks = sum(1 for r in results if r.get('has_watermark') is True and 
+                                      0.91 <= r.get('confidence_watermarked', 0) < 0.96)
+        low_confidence_watermarks = sum(1 for r in results if r.get('has_watermark') is True and 
+                                       r.get('confidence_watermarked', 0) < 0.91)
+        
+        # Calculate totals for display
+        invalid_count = high_confidence_watermarks + error_count  # Only high-confidence watermarks + errors are invalid
+        valid_count = clean_count + low_confidence_watermarks  # Clean images + low-confidence watermarks are valid
+        manual_review_count = manual_review_watermarks
         
         print(f"\nSUMMARY:")
         print(f"  Total Images Processed: {total}")
-        print(f"  Valid Images: {clean_count}")
-        print(f"  Invalid Images: {watermarked_count - manual_review_count}")
+        print(f"  Valid Images: {valid_count}")
+        print(f"  Invalid Images: {invalid_count}")
         print(f"  Manual Review Needed (moved): {manual_review_count}")
-        print(f"  Success Rate: {(clean_count/total*100):.1f}%" if total > 0 else "  Success Rate: 0%")
+        print(f"  Success Rate: {(valid_count/total*100):.1f}%" if total > 0 else "  Success Rate: 0%")
         
         # Group results by categories
         valid_images = []
@@ -752,16 +760,17 @@ class AdvancedWatermarkDetector:
                 confidence = result.get('confidence_watermarked', 0) * 100
                 reason = f"Watermark detected (confidence: {confidence:.1f}%)"
                 
-                # Fix the logic to match file organization:
+                # Match the file organization logic:
                 # High confidence (96%+) → Invalid
                 # Medium confidence (91-96%) → Manual Review  
-                # Low confidence (<91%) → Invalid (but this case shouldn't occur here)
+                # Low confidence (<91%) → Valid (treated as clean/acceptable)
                 if confidence >= 96.0:
                     invalid_images.append((filename, reason))
                 elif confidence >= 91.0:
                     manual_review_images.append((filename, reason))
                 else:
-                    invalid_images.append((filename, reason))
+                    # Low confidence watermarks are treated as valid/clean
+                    valid_images.append((filename, f"Low confidence watermark ({confidence:.1f}%) - treated as clean"))
             elif result.get('has_watermark') is False:
                 confidence = result.get('confidence_clean', 0) * 100
                 valid_images.append((filename, f"Clean image (confidence: {confidence:.1f}%)"))
