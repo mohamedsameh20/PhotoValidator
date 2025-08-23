@@ -10,6 +10,8 @@ import shutil
 import traceback
 import tempfile
 import argparse
+import time
+from abc import ABC, abstractmethod
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -18,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Consolidated and calibrated configuration with consistent thresholds
 DEFAULT_CONFIG = {
-    'BASE_PROJECT_PATH': 'C:\\Users\\Public\\Python\\ittask',
+    'BASE_PROJECT_PATH': os.environ.get('PHOTOVALIDATOR_PATH', os.getcwd()),  # Cross-platform compatible
     'SOURCE_DIR': 'photos4testing',
     'OUTPUT_DIR': 'Results',  # Unified output folder
     'PARALLEL_PROCESSING': True,
@@ -34,7 +36,8 @@ DEFAULT_CONFIG = {
     'UNIFORMITY_THRESHOLD_STRICT': 0.85,  # Strict uniformity for high confidence
     'TEXTURE_SENSITIVITY': 1.8,
     'CONFIDENCE_THRESHOLD_LOW': 0.35,     # Below this = no border
-    'CONFIDENCE_THRESHOLD_HIGH': 0.58,    # Above this = border detected (updated from manual review)
+    'CONFIDENCE_THRESHOLD_MANUAL': 0.55,  # Above this = manual review needed  
+    'CONFIDENCE_THRESHOLD_INVALID': 0.58, # Above this = invalid (border detected)
     'CONFIDENCE_THRESHOLD_OBVIOUS': 0.85, # Above this = very obvious border
     
     # === EDGE DETECTION PARAMETERS ===
@@ -97,6 +100,131 @@ DEFAULT_CONFIG = {
     'BILATERAL_SIGMA_SPACE': 75,   # Spatial proximity threshold
     'SKIP_PREPROCESSING': True,    # Skip all preprocessing for cleanest edge detection
 }
+
+
+def validate_preprocessing_config(config):
+    """Validate preprocessing configuration for conflicts."""
+    preprocess_flags = [
+        config.get('APPLY_GAUSSIAN_BLUR', False),
+        config.get('USE_BILATERAL_FILTER', False)
+    ]
+    
+    if sum(preprocess_flags) > 1:
+        raise ValueError("Multiple preprocessing methods enabled - choose only one")
+    
+    if config.get('SKIP_PREPROCESSING', False) and any(preprocess_flags):
+        logger.warning("SKIP_PREPROCESSING=True overrides other preprocessing flags")
+
+
+def validate_threshold_consistency(config):
+    """Validate that threshold values are logically consistent."""
+    # Check confidence thresholds
+    low = config.get('CONFIDENCE_THRESHOLD_LOW', 0.4)
+    manual = config.get('CONFIDENCE_THRESHOLD_MANUAL', 0.55)
+    invalid = config.get('CONFIDENCE_THRESHOLD_INVALID', 0.58)
+    obvious = config.get('CONFIDENCE_THRESHOLD_OBVIOUS', 0.85)
+    
+    if not (low < manual < invalid < obvious):
+        raise ValueError(f"Confidence thresholds must be in ascending order: {low} < {manual} < {invalid} < {obvious}")
+    
+    # Check border size constraints
+    min_ratio = config.get('MIN_BORDER_SIZE_RATIO', 0.005)
+    max_ratio = config.get('MAX_BORDER_SIZE_RATIO', 0.15)
+    
+    if min_ratio >= max_ratio:
+        raise ValueError(f"MIN_BORDER_SIZE_RATIO ({min_ratio}) must be less than MAX_BORDER_SIZE_RATIO ({max_ratio})")
+
+
+class ConfigManager:
+    """Centralized configuration management with validation."""
+    
+    def __init__(self, config_path=None, base_config=None):
+        self.config = (base_config or DEFAULT_CONFIG).copy()
+        
+        if config_path and os.path.exists(config_path):
+            self._load_external_config(config_path)
+        
+        self._validate_config()
+    
+    def _load_external_config(self, config_path):
+        """Load configuration from JSON file."""
+        try:
+            with open(config_path, 'r') as f:
+                external_config = json.load(f)
+            self.config.update(external_config)
+            logger.info(f"Loaded external configuration from {config_path}")
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"Failed to load external config {config_path}: {e}")
+            raise
+    
+    def _validate_config(self):
+        """Validate configuration consistency."""
+        validate_preprocessing_config(self.config)
+        validate_threshold_consistency(self.config)
+        logger.debug("Configuration validation passed")
+    
+    def get_config(self):
+        """Get validated configuration."""
+        return self.config.copy()
+
+
+class ImagePropertiesCache:
+    """Cache for expensive image property calculations."""
+    
+    def __init__(self, max_size=100):
+        self.cache = {}
+        self.max_size = max_size
+        self.access_order = []
+    
+    def get_properties(self, img_path, image=None):
+        """Get cached image properties or calculate them."""
+        try:
+            # Create cache key based on file path and modification time
+            cache_key = f"{img_path}_{os.path.getmtime(img_path)}"
+            
+            if cache_key in self.cache:
+                # Move to end of access order (LRU)
+                self.access_order.remove(cache_key)
+                self.access_order.append(cache_key)
+                return self.cache[cache_key]
+            
+            # Calculate new properties
+            properties = self._calculate_properties(img_path, image)
+            
+            # Add to cache with LRU eviction
+            if len(self.cache) >= self.max_size:
+                oldest_key = self.access_order.pop(0)
+                del self.cache[oldest_key]
+            
+            self.cache[cache_key] = properties
+            self.access_order.append(cache_key)
+            
+            return properties
+            
+        except OSError as e:
+            logger.warning(f"Could not cache properties for {img_path}: {e}")
+            return self._calculate_properties(img_path, image)
+    
+    def _calculate_properties(self, img_path, image=None):
+        """Calculate image properties."""
+        if image is None:
+            image = cv2.imread(img_path)
+            if image is None:
+                raise IOError(f"Could not load image: {img_path}")
+        
+        height, width = image.shape[:2]
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) > 2 else image
+        
+        return {
+            'height': height,
+            'width': width,
+            'min_dimension': min(height, width),
+            'image_area': height * width,
+            'gray': gray,
+            'global_mean': np.mean(gray),
+            'global_std': np.std(gray),
+            'file_size': os.path.getsize(img_path) if os.path.exists(img_path) else 0
+        }
 
 def load_images(config):
     """Load all images from the source directory."""
@@ -900,121 +1028,123 @@ def validate_color_consistency(image, border_mask, center_mask):
 
 def contour_detection(contours, height, width, adapted_config, perimeter_mask):
     """
-    Revised contour detection with improved accuracy and reduced false positives.
+    Optimized contour detection with early filtering and improved performance.
     """
     if not contours:
-        return False, None, 0.0
+        return {
+            'frame_detected': False,
+            'best_contour': None,
+            'confidence': 0.0
+        }
     
-    # Sort contours by area (largest first) and limit to reasonable candidates
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:8]
-    
-    # Image area for relative calculations
+    # === EARLY FILTERING FOR PERFORMANCE ===
+    # Pre-filter by area before expensive operations
     image_area = height * width
-    min_area = image_area * 0.05  # Minimum 5% of image
-    max_area = image_area * 0.95  # Maximum 95% of image
+    min_area = image_area * adapted_config.get('FRAME_AREA_MIN', 0.05)
+    max_area = image_area * adapted_config.get('FRAME_AREA_MAX', 0.95)
+    
+    # Quick area-based filtering
+    valid_contours = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if min_area <= area <= max_area:
+            valid_contours.append((contour, area))
+    
+    if not valid_contours:
+        return {
+            'frame_detected': False,
+            'best_contour': None,
+            'confidence': 0.0
+        }
+    
+    # Sort by area (largest first) and limit to top 5 for efficiency
+    valid_contours.sort(key=lambda x: x[1], reverse=True)
+    top_contours = [contour for contour, area in valid_contours[:5]]
     
     candidates = []
     
-    for contour in contours:
-        area = cv2.contourArea(contour)
+    for contour in top_contours:
+        # Quick complexity check - skip overly complex contours
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
         
-        # Skip contours that are too small or too large
-        if area < min_area or area > max_area:
+        if len(approx) > 20:  # Skip overly complex shapes
             continue
         
-        # Check if contour is actually at the perimeter
+        # Check if contour is at the perimeter (critical for frame detection)
         contour_mask = np.zeros((height, width), dtype=np.uint8)
         cv2.drawContours(contour_mask, [contour], 0, 255, -1)
         
         # Check overlap with perimeter mask
         perimeter_overlap = cv2.bitwise_and(contour_mask, perimeter_mask)
-        overlap_ratio = np.sum(perimeter_overlap > 0) / np.sum(contour_mask > 0)
+        overlap_ratio = np.sum(perimeter_overlap > 0) / max(1, np.sum(contour_mask > 0))
         
-        if overlap_ratio < 0.7:  # At least 70% should be at perimeter
+        if overlap_ratio < 0.6:  # At least 60% should be at perimeter
             continue
         
-        # Analyze contour shape properties
-        # Approximate the contour to reduce noise
-        epsilon = 0.02 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-        
-        # Calculate shape metrics
+        # Calculate essential properties efficiently
+        area = cv2.contourArea(contour)
         area_ratio = area / image_area
         perimeter = cv2.arcLength(contour, True)
         
-        # Rectangularity: how rectangular is the shape
-        if perimeter > 0:
-            rectangularity = 4 * np.pi * area / (perimeter * perimeter)
-        else:
-            rectangularity = 0
-        
-        # Solidity: ratio of contour area to convex hull area
-        hull = cv2.convexHull(contour)
-        hull_area = cv2.contourArea(hull)
-        solidity = area / hull_area if hull_area > 0 else 0
+        # Rectangularity (lower values indicate more rectangular shapes)
+        rectangularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
         
         # Aspect ratio analysis
         rect = cv2.minAreaRect(contour)
         box_width, box_height = rect[1]
-        if box_height > 0:
-            aspect_ratio = box_width / box_height
-            # Prefer aspect ratios that are reasonable for frames (not too extreme)
-            aspect_score = 1.0 - min(1.0, abs(np.log(aspect_ratio)) / 2.0)
-        else:
-            aspect_score = 0
+        aspect_ratio = box_width / max(box_height, 1e-6)
+        aspect_score = 1.0 - min(1.0, abs(np.log(max(aspect_ratio, 1e-6))) / 2.0)
         
-        # Centeredness: how centered is the contour
+        # Centeredness calculation
         moments = cv2.moments(contour)
+        centeredness = 0.5  # Default moderate score
         if moments['m00'] > 0:
             cx = int(moments['m10'] / moments['m00'])
             cy = int(moments['m01'] / moments['m00'])
-            center_x, center_y = width // 2, height // 2
-            center_distance = np.sqrt((cx - center_x)**2 + (cy - center_y)**2)
+            center_distance = np.sqrt((cx - width/2)**2 + (cy - height/2)**2)
             max_distance = np.sqrt((width/2)**2 + (height/2)**2)
             centeredness = 1.0 - (center_distance / max_distance)
-        else:
-            centeredness = 0
         
-        # Composite score for this contour
+        # Optimized scoring for frame-like properties
         if 4 <= len(approx) <= 12:  # Reasonable polygon complexity
-            # Weight factors for frame-like properties
             frame_score = (
-                0.30 * rectangularity +     # How rectangular
-                0.25 * solidity +           # How solid/filled
-                0.20 * centeredness +       # How centered
-                0.15 * aspect_score +       # Reasonable aspect ratio
-                0.10 * overlap_ratio        # Good perimeter overlap
+                0.25 * (1.0 - rectangularity) +  # Prefer rectangular shapes (low rectangularity)
+                0.25 * overlap_ratio +            # Good perimeter overlap
+                0.20 * centeredness +             # Centered in image
+                0.15 * aspect_score +             # Reasonable aspect ratio
+                0.15 * min(1.0, area_ratio * 4)   # Substantial but not overwhelming size
             )
             
-            # Apply area ratio adjustment
-            if 0.15 <= area_ratio <= 0.85:  # Good area range
-                area_bonus = 1.0
-            else:
-                area_bonus = 0.8  # Slight penalty for extreme areas
-            
-            frame_score *= area_bonus
+            # Bonus for optimal area range
+            if 0.15 <= area_ratio <= 0.85:
+                frame_score *= 1.1
             
             candidates.append({
                 'contour': contour,
                 'score': frame_score,
                 'approx': approx,
                 'area_ratio': area_ratio,
-                'rectangularity': rectangularity,
-                'solidity': solidity
+                'rectangularity': rectangularity
             })
     
-    # Sort by score and return best candidate
+    # Return best candidate if it meets minimum threshold
     if candidates:
-        candidates.sort(key=lambda x: x['score'], reverse=True)
-        best = candidates[0]
-        
-        # Apply minimum threshold for detection
-        min_score_threshold = 0.5
+        best = max(candidates, key=lambda x: x['score'])
+        min_score_threshold = adapted_config.get('FRAME_DETECTION_THRESHOLD', 0.5)
         frame_detected = best['score'] > min_score_threshold
         
-        return frame_detected, best['contour'], best['score']
+        return {
+            'frame_detected': frame_detected,
+            'best_contour': best['contour'],
+            'confidence': best['score']
+        }
     else:
-        return False, None, 0.0
+        return {
+            'frame_detected': False,
+            'best_contour': None,
+            'confidence': 0.0
+        }
 
 def compute_per_side_uniformity(gray, border_width, height, width):
     """
@@ -1397,310 +1527,251 @@ def enhance_edges_for_frame_detection(gray, height, width, already_filtered=Fals
     
     return closing
 
-def detect_border(img_path, config):
-    """Detect if an image has a border or frame with optimized loading."""
-    try:
-        # Load image once (no redundant loading)
-        image = cv2.imread(img_path)
-        if image is None:
-            logger.error(f"Failed to load image: {img_path}")
+class BorderDetector:
+    """
+    Modular border detection class that breaks down the monolithic detection process.
+    """
+    
+    def __init__(self, config_manager=None):
+        self.config = config_manager.get_config() if config_manager else DEFAULT_CONFIG.copy()
+        self.cache = ImagePropertiesCache()
+        self.stats = {'processed': 0, 'detected': 0, 'errors': 0}
+    
+    def detect(self, img_path):
+        """
+        Main detection orchestrator with comprehensive error handling.
+        
+        Returns:
+            dict: Detection result with all relevant information
+        """
+        start_time = time.time()
+        
+        try:
+            # Stage 1: Load and validate image
+            image = self._load_and_validate_image(img_path)
+            if image is None:
+                return self._create_error_result(img_path, "Failed to load image")
+            
+            # Stage 2: Extract image properties (cached)
+            properties = self._extract_image_properties(img_path, image)
+            
+            # Stage 3: Run detection pipeline
+            detection_results = self._run_detection_pipeline(image, properties)
+            
+            # Stage 4: Generate final result
+            final_result = self._generate_final_result(img_path, detection_results, properties)
+            final_result['processing_time'] = time.time() - start_time
+            
+            self.stats['processed'] += 1
+            if final_result.get('border_detected', False):
+                self.stats['detected'] += 1
+            
+            return final_result
+            
+        except Exception as e:
+            self.stats['errors'] += 1
+            logger.error(f"Detection failed for {img_path}: {e}")
+            return self._create_error_result(img_path, str(e))
+    
+    def _load_and_validate_image(self, img_path):
+        """Load and validate image with proper error handling."""
+        try:
+            if not os.path.exists(img_path):
+                logger.error(f"Image file not found: {img_path}")
+                return None
+            
+            image = cv2.imread(img_path)
+            if image is None:
+                logger.error(f"Could not decode image: {img_path}")
+                return None
+            
+            # Basic validation
+            if image.size == 0:
+                logger.error(f"Empty image: {img_path}")
+                return None
+            
+            return image
+            
+        except (IOError, OSError) as e:
+            logger.error(f"Error loading image {img_path}: {e}")
             return None
+    
+    def _extract_image_properties(self, img_path, image):
+        """Extract and cache image properties to avoid redundant calculations."""
+        return self.cache.get_properties(img_path, image)
+    
+    def _create_error_result(self, img_path, error_message):
+        """Create standardized error result."""
+        return {
+            'image_path': img_path,
+            'border_detected': False,
+            'confidence': 0.0,
+            'reason': f"Error: {error_message}",
+            'error': True,
+            'processing_time': 0.0
+        }
+    
+    def _run_detection_pipeline(self, image, properties):
+        """
+        Run the complete detection pipeline using existing optimized functions.
         
-        height, width = image.shape[:2]
+        Args:
+            image: Loaded image
+            properties: Pre-computed image properties
+            
+        Returns:
+            dict: Detection results from all methods
+        """
+        height, width = properties['height'], properties['width']
+        gray = properties['gray']
+        min_dimension = properties['min_dimension']
+        global_mean = properties['global_mean']
+        global_std = properties['global_std']
         
-        # === CENTRALIZED COMPUTATION OPTIMIZATION ===
-        # Calculate all fundamental properties once at the beginning
-        min_dimension = min(height, width)
-        
-        # Check minimum image size to avoid unreliable results
-        if min_dimension < 100:
-            logger.warning(f"Image too small for reliable detection: {img_path} ({width}x{height})")
-            return {
-                'simple_border_detected': False,
-                'frame_detected': False,
-                'textured_frame_detected': False,
-                'frame_contour': None,
-                'color_difference': 0.0,
-                'confidence': 0.0,
-                'img_path': img_path,
-                'adapted_thresholds': False,
-                'skip_reason': 'image_too_small'
-            }
-        
-        # Single grayscale conversion (no redundancy)
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # Calculate global statistics once
-        global_mean = np.mean(gray)
-        global_std = np.std(gray)
-        
-        # Check for solid/uniform color images
-        if global_std < config.get('SOLID_COLOR_STD_THRESHOLD', 3):
-            logger.info(f"Solid color image detected, skipping: {img_path}")
-            return {
-                'simple_border_detected': False,
-                'frame_detected': False,
-                'textured_frame_detected': False,
-                'frame_contour': None,
-                'color_difference': 0.0,
-                'confidence': 0.0,
-                'img_path': img_path,
-                'adapted_thresholds': False,
-                'skip_reason': 'solid_color'
-            }
-        
-        # Calculate noise statistics once
-        noise_penalty = 1.0
-        noise_std = np.std(gray - cv2.medianBlur(gray, 3))
-        if noise_std > config['NOISE_THRESHOLD']:
-            logger.info(f"High noise detected in {img_path}, applying penalty")
-            noise_penalty = config.get('NOISE_PENALTY_FACTOR', 0.8)
-        
-        output_dir = os.path.join(config['BASE_PROJECT_PATH'], config['OUTPUT_DIR'])
-        
-        output_dir = os.path.join(config['BASE_PROJECT_PATH'], config['OUTPUT_DIR'])
-        
-        # Adapt config parameters using pre-computed statistics
-        adapted_config = calculate_adaptive_thresholds(image, config, global_mean, global_std)
-        
-        # Further adapt thresholds based on image resolution
+        # Adapt configuration for this image
+        adapted_config = calculate_adaptive_thresholds(image, self.config, global_mean, global_std)
         adapted_config = adapt_thresholds_to_resolution(image, adapted_config)
         
-        # Apply preprocessing for noise reduction while preserving edges
-        if adapted_config.get('SKIP_PREPROCESSING', True):
-            # No preprocessing - best for crisp, thin borders
-            blurred = gray.copy()
-        elif adapted_config.get('USE_BILATERAL_FILTER', False):
-            # Bilateral filter preserves edges while reducing noise - good for noisy images
-            bilateral_d = adapted_config.get('BILATERAL_D', 9)
-            bilateral_sigma_color = adapted_config.get('BILATERAL_SIGMA_COLOR', 75)
-            bilateral_sigma_space = adapted_config.get('BILATERAL_SIGMA_SPACE', 75)
-            blurred = cv2.bilateralFilter(gray, bilateral_d, bilateral_sigma_color, bilateral_sigma_space)
-        elif adapted_config.get('APPLY_GAUSSIAN_BLUR', False):
-            # Only use Gaussian blur if explicitly enabled (not recommended for border detection)
-            blur_kernel_size = adapted_config.get('BLUR_KERNEL_SIZE', 3)  # Smaller default
-            # Ensure kernel size is odd and positive
-            if blur_kernel_size % 2 == 0:
-                blur_kernel_size += 1
-            blur_kernel_size = max(3, blur_kernel_size)
-            blurred = cv2.GaussianBlur(gray, (blur_kernel_size, blur_kernel_size), 0)
-        else:
-            # No preprocessing - use original grayscale (often best for crisp borders)
-            blurred = gray.copy()
-        
-        # Check for vignetting effects early using pre-computed values
-        has_vignette = False
-        vignette_score = 0.0
-        if adapted_config.get('VIGNETTE_DETECTION', True):
-            has_vignette, vignette_score = detect_vignetting(image, gray, height, width, min_dimension)
-        
-        # Removed natural framing detection - simplified approach
-        is_natural_frame = False
-        natural_frame_score = 0.0
-        
-        # Check for uniform background that might cause false positives
-        has_uniform_bg, uniformity_score = detect_uniform_background_regions(gray, height, width, adapted_config)
-        uniform_bg_penalty = 1.0
-        if has_uniform_bg:
-            logger.info(f"Uniform background detected in {img_path}, applying penalty")
-            uniform_bg_penalty = config.get('UNIFORM_BG_PENALTY_FACTOR', 0.7)  # Moderate penalty for uniform backgrounds
-        
-        # Check for compression artifacts that might cause false borders
-        has_artifacts, artifact_score = False, 0.0
-        artifact_penalty = 1.0
-        if adapted_config.get('COMPRESSION_ARTIFACT_DETECTION', True):
-            has_artifacts, artifact_score = detect_compression_artifacts(gray, height, width)
-            if has_artifacts:
-                logger.info(f"Compression artifacts detected in {img_path}, applying penalty")
-                artifact_penalty = config.get('ARTIFACT_PENALTY_FACTOR', 0.6)  # Moderate penalty for compression artifacts
-        
-        # Create perimeter mask once, using pre-computed min_dimension (if enabled)
-        perimeter_mask = None
-        if adapted_config.get('USE_PERIMETER_MASKING', False):
-            perimeter_mask = create_perimeter_mask(height, width, adapted_config, min_dimension)
-        
-        # Apply edge detection to the preprocessed image
-        using_bilateral = adapted_config.get('USE_BILATERAL_FILTER', False) and not adapted_config.get('SKIP_PREPROCESSING', True)
-        if is_natural_frame or has_vignette:
-            # Apply more sophisticated edge detection to better differentiate 
-            # between natural frames and deliberate borders
-            enhanced_edges = enhance_edges_for_frame_detection(blurred, height, width, already_filtered=using_bilateral)
-            edges = enhanced_edges
-        else:
-            # Standard edge detection with configurable thresholds
-            edges = cv2.Canny(blurred, 
-                             adapted_config['CANNY_THRESHOLD1'], 
-                             adapted_config['CANNY_THRESHOLD2'])
-        
-        # Optionally apply the perimeter mask to FILTER the detected edges
-        if perimeter_mask is not None:
-            # This removes edges from the center but doesn't create artificial mask edges
-            filtered_edges = cv2.bitwise_and(edges, edges, mask=perimeter_mask)
-        else:
-            # Use all detected edges (recommended for better detection)
-            filtered_edges = edges
-        
-        # Apply dilation to connect edge fragments (configurable)
-        if adapted_config.get('APPLY_EDGE_DILATION', True):
-            kernel = np.ones((3, 3), np.uint8)
-            dilation_iterations = adapted_config.get('DILATION_ITERATIONS', 2)
-            dilation_iterations = max(1, min(5, dilation_iterations))  # Clamp between 1-5
-            dilated_edges = cv2.dilate(filtered_edges, kernel, iterations=dilation_iterations)
-        else:
-            dilated_edges = filtered_edges.copy()  # No dilation
-        
-        # Save intermediate results if configured
-        if adapted_config['SAVE_INTERMEDIATE']:
-            intermediate_dir = os.path.join(output_dir, 'intermediate')
-            os.makedirs(intermediate_dir, exist_ok=True)
-            base_name = os.path.basename(img_path)
-            
-            # Determine preprocessing method for naming
-            if adapted_config.get('SKIP_PREPROCESSING', True):
-                preprocess_name = "none"
-            elif adapted_config.get('USE_BILATERAL_FILTER', False):
-                preprocess_name = "bilateral"
-            elif adapted_config.get('APPLY_GAUSSIAN_BLUR', False):
-                preprocess_name = "gaussian"
-            else:
-                preprocess_name = "none"
-            
-            cv2.imwrite(os.path.join(intermediate_dir, f"{os.path.splitext(base_name)[0]}_1_gray.jpg"), gray)
-            cv2.imwrite(os.path.join(intermediate_dir, f"{os.path.splitext(base_name)[0]}_2_preprocessed_{preprocess_name}.jpg"), blurred)
-            cv2.imwrite(os.path.join(intermediate_dir, f"{os.path.splitext(base_name)[0]}_3_edges_original.jpg"), edges)
-            cv2.imwrite(os.path.join(intermediate_dir, f"{os.path.splitext(base_name)[0]}_4_edges_filtered.jpg"), filtered_edges)
-            cv2.imwrite(os.path.join(intermediate_dir, f"{os.path.splitext(base_name)[0]}_5_dilated.jpg"), dilated_edges)
-            if perimeter_mask is not None:
-                cv2.imwrite(os.path.join(intermediate_dir, f"{os.path.splitext(base_name)[0]}_6_perimeter_mask.jpg"), perimeter_mask)
-            else:
-                # Create a placeholder image indicating no perimeter masking
-                no_mask_img = np.ones((height, width), dtype=np.uint8) * 128  # Gray image
-                cv2.putText(no_mask_img, "No Perimeter Masking", (width//4, height//2), 
-                           cv2.FONT_HERSHEY_SIMPLEX, min(width, height) / 800, 255, 2)
-                cv2.imwrite(os.path.join(intermediate_dir, f"{os.path.splitext(base_name)[0]}_6_perimeter_mask.jpg"), no_mask_img)
-        
-        # Find contours from the filtered and dilated edges
-        contours, _ = cv2.findContours(dilated_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Initialize detection results
-        simple_border_detected = False
-        frame_detected = False
-        textured_frame_detected = False
-        frame_contour = None
-        confidence_scores = []
-        color_difference = 0
-        
-        # === STREAMLINED DETECTION PIPELINE ===
-        # Eliminate redundant validations and use consistent thresholds
-        
-        detection_results = {
-            'obvious_border': False,
-            'simple_border': False, 
-            'frame_border': False,
-            'textured_border': False,
+        results = {
+            'detection_methods': [],
             'confidence_scores': [],
-            'color_difference': 0.0
+            'adapted_config': adapted_config
         }
         
-        # Method 1: Fast obvious border detection (most reliable)
+        # Check for obvious borders first (fastest)
+        obvious_detected = False
         if adapted_config.get('ENABLE_OBVIOUS_BORDER_CHECK', True):
-            obvious_detected, obvious_info, obvious_conf = detect_obvious_borders_fast(image, gray, adapted_config, min_dimension)
-            if obvious_detected and obvious_conf > adapted_config['CONFIDENCE_THRESHOLD_LOW']:
-                detection_results['obvious_border'] = True
-                detection_results['simple_border'] = True  # Obvious borders are simple borders
-                detection_results['confidence_scores'].append(('obvious', obvious_conf))
-                detection_results['color_difference'] = max(detection_results['color_difference'], obvious_conf * 100)
-                
-                # High confidence obvious borders can skip other methods
-                if obvious_conf > adapted_config['CONFIDENCE_THRESHOLD_OBVIOUS']:
-                    logger.debug(f"Very obvious border detected (confidence: {obvious_conf:.3f}), skipping redundant checks")
+            obvious_detected, border_info, obvious_confidence = detect_obvious_borders_fast(
+                image, gray, adapted_config, min_dimension)
+            if obvious_detected:
+                results['detection_methods'].append('obvious')
+                results['confidence_scores'].append(('obvious', obvious_confidence))
+                results['obvious_border_info'] = border_info
         
-        # Method 2: Simple border pattern detection
-        if not detection_results['obvious_border'] or detection_results['confidence_scores'][0][1] < adapted_config['CONFIDENCE_THRESHOLD_OBVIOUS']:
-            simple_detected, simple_diff, simple_score = detect_simple_border_patterns(image, gray, height, width, adapted_config, global_mean, global_std, min_dimension)
-            if simple_detected and simple_score > adapted_config['CONFIDENCE_THRESHOLD_LOW']:
-                detection_results['simple_border'] = True
-                detection_results['confidence_scores'].append(('simple', min(1.0, simple_score)))
-                detection_results['color_difference'] = max(detection_results['color_difference'], simple_diff)
+        # Simple border detection
+        simple_detected, color_diff, simple_confidence = detect_simple_border_patterns(
+            image, gray, height, width, adapted_config, global_mean, global_std, min_dimension)
         
-        # Method 3: Frame detection via contours (only if no simple border found or low confidence)
-        max_confidence = max([score for _, score in detection_results['confidence_scores']], default=0.0)
-        if max_confidence < adapted_config['CONFIDENCE_THRESHOLD_HIGH']:
-            if contours and len(contours) > 0:
-                # Create a default perimeter mask if none exists (all white = no filtering)
-                contour_perimeter_mask = perimeter_mask
-                if contour_perimeter_mask is None:
-                    contour_perimeter_mask = np.ones((height, width), dtype=np.uint8) * 255
-                    
-                frame_detected_flag, frame_contour, frame_confidence = contour_detection(
-                    contours, height, width, adapted_config, contour_perimeter_mask)
-                
-                if frame_detected_flag and frame_confidence > adapted_config['CONFIDENCE_THRESHOLD_LOW']:
-                    detection_results['frame_border'] = True
-                    detection_results['confidence_scores'].append(('frame', frame_confidence))
+        if simple_detected:
+            results['detection_methods'].append('simple')
+            results['confidence_scores'].append(('simple', simple_confidence))
+            results['color_difference'] = color_diff
         
-        # Method 4: Texture-based detection (complementary, not redundant)
+        # Frame contour detection
+        frame_detected = False
+        if adapted_config.get('ENABLE_FRAME_DETECTION', True):
+            # Enhanced edge detection
+            enhanced_edges = enhance_edges_for_frame_detection(gray, height, width)
+            contours, _ = cv2.findContours(enhanced_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                perimeter_mask = create_perimeter_mask(height, width, adapted_config, min_dimension)
+                frame_result = contour_detection(contours, height, width, adapted_config, perimeter_mask)
+                if frame_result and frame_result.get('frame_detected', False):
+                    frame_detected = True
+                    results['detection_methods'].append('frame')
+                    results['confidence_scores'].append(('frame', frame_result.get('confidence', 0.0)))
+                    results['frame_contour'] = frame_result.get('best_contour')
+        
+        # Textured frame detection
+        textured_detected = False
         if adapted_config.get('ENABLE_TEXTURE_DETECTION', True):
             textured_detected, texture_ratio = detect_texture_based_frame(gray, height, width, adapted_config)
             if textured_detected:
-                texture_confidence = min(1.0, (texture_ratio - 1.0) / adapted_config.get('TEXTURE_SENSITIVITY', 1.8))
-                if texture_confidence > adapted_config['CONFIDENCE_THRESHOLD_LOW']:
-                    detection_results['textured_border'] = True
-                    detection_results['confidence_scores'].append(('texture', texture_confidence))
+                results['detection_methods'].append('texture')
+                results['confidence_scores'].append(('texture', min(1.0, texture_ratio / 3.0)))
+                results['texture_ratio'] = texture_ratio
         
-        # === UNIFIED CONFIDENCE CALCULATION ===
-        overall_confidence = calculate_robust_confidence(
-            detection_results, image, gray, has_uniform_bg, has_artifacts, 
-            noise_std, has_vignette, vignette_score, adapted_config
-        )
+        # Quality assessments
+        has_uniform_bg, uniformity_score = detect_uniform_background_regions(gray, height, width, adapted_config)
+        has_artifacts, artifact_score = detect_compression_artifacts(gray, height, width)
+        has_vignette, vignette_score = detect_vignetting(image, gray, height, width, min_dimension)
         
-        # Final detection flags based on confidence
-        simple_border_detected = (detection_results['simple_border'] or detection_results['obvious_border']) and overall_confidence > adapted_config['CONFIDENCE_THRESHOLD_LOW']
-        frame_detected = detection_results['frame_border'] and overall_confidence > adapted_config['CONFIDENCE_THRESHOLD_LOW']
-        textured_frame_detected = detection_results['textured_border'] and overall_confidence > adapted_config['CONFIDENCE_THRESHOLD_LOW']
-        
-        # Determine if manual review is needed using consistent thresholds
-        # Manual review is only for confidence between low and high thresholds (0.35 to 0.58)
-        manual_review = (config['CONFIDENCE_THRESHOLD_LOW'] < 
-                        overall_confidence < 
-                        config['CONFIDENCE_THRESHOLD_HIGH'])
-        
-        # Override: No manual review if confidence > 0.58 (these are classified as bordered)
-        if overall_confidence > 0.58:
-            manual_review = False
-        
-        if manual_review:
-            logger.debug(f"Manual review flagged for {img_path} (confidence: {overall_confidence:.3f})")
-        
-        # Simplified detection reason (no redundant logic)
-        detection_reason = generate_detection_reason(
-            simple_border_detected, frame_detected, textured_frame_detected,
-            detection_results, overall_confidence, has_uniform_bg, has_vignette, 
-            vignette_score, has_artifacts
-        )
-
-        # Return detection results
-        return {
-            'simple_border_detected': simple_border_detected,
+        results.update({
+            'obvious_detected': obvious_detected,
+            'simple_detected': simple_detected,
             'frame_detected': frame_detected,
-            'textured_frame_detected': textured_frame_detected,
-            'frame_contour': None,  # Don't return the actual contour - it's not JSON serializable
-            'color_difference': float(detection_results['color_difference']),
-            'confidence': float(overall_confidence),
-            'img_path': img_path,
-            'adapted_thresholds': adapted_config != config,
-            'manual_review': manual_review,
-            'has_uniform_background': has_uniform_bg,
-            'has_compression_artifacts': has_artifacts,
-            'noise_penalty_applied': noise_std > config['NOISE_THRESHOLD'],
-            'detection_reason': detection_reason
-        }
+            'textured_detected': textured_detected,
+            'has_uniform_bg': has_uniform_bg,
+            'uniformity_score': uniformity_score,
+            'has_artifacts': has_artifacts,
+            'artifact_score': artifact_score,
+            'has_vignette': has_vignette,
+            'vignette_score': vignette_score,
+            'noise_std': np.std(gray - cv2.medianBlur(gray, 3))
+        })
+        
+        return results
     
-    except Exception as e:
-        logger.error(f"Error processing image {img_path}: {str(e)}")
-        import traceback
-        logger.debug(traceback.format_exc())
-        return None
+    def _generate_final_result(self, img_path, detection_results, properties):
+        """
+        Generate final detection result with confidence scoring.
+        
+        Args:
+            img_path: Path to image file
+            detection_results: Results from detection pipeline
+            properties: Image properties
+            
+        Returns:
+            dict: Final detection result
+        """
+        # Calculate robust confidence score
+        confidence = calculate_robust_confidence(
+            detection_results, 
+            None,  # We don't need the full image here
+            properties['gray'],
+            detection_results['has_uniform_bg'],
+            detection_results['has_artifacts'],
+            detection_results['noise_std'],
+            detection_results['has_vignette'],
+            detection_results['vignette_score'],
+            detection_results['adapted_config']
+        )
+        
+        # Determine if border is detected
+        border_detected = (
+            detection_results.get('obvious_detected', False) or
+            detection_results['simple_detected'] or 
+            detection_results['frame_detected'] or 
+            detection_results['textured_detected']
+        ) and confidence > detection_results['adapted_config'].get('CONFIDENCE_THRESHOLD_LOW', 0.35)
+        
+        # Generate detection reason
+        reason = generate_detection_reason(
+            detection_results['simple_detected'],
+            detection_results['frame_detected'],
+            detection_results['textured_detected'],
+            detection_results,
+            confidence,
+            detection_results['has_uniform_bg'],
+            detection_results['has_vignette'],
+            detection_results['vignette_score'],
+            detection_results['has_artifacts']
+        )
+        
+        # Build result in legacy format for compatibility
+        result = {
+            'image_path': img_path,
+            'img_path': img_path,  # Legacy field
+            'border_detected': border_detected,
+            'obvious_border_detected': detection_results.get('obvious_detected', False),
+            'simple_border_detected': detection_results['simple_detected'],
+            'frame_detected': detection_results['frame_detected'],
+            'textured_frame_detected': detection_results['textured_detected'],
+            'confidence': confidence,
+            'reason': reason,
+            'color_difference': detection_results.get('color_difference', 0.0),
+            'frame_contour': detection_results.get('frame_contour'),
+            'adapted_thresholds': True,
+            'error': False
+        }
+        
+        return result
+
+    def get_statistics(self):
+        """Get processing statistics."""
+        return self.stats.copy()
+
 
 def print_ascii_table(detections, title="Border/Frame Detected Images"):
     """
@@ -1756,45 +1827,35 @@ def print_main_style_border_summary(detections_list: list, config: dict) -> None
     print(f"  Enabled: borders")
     print(f"  Disabled: editing, specifications, text, watermarks")
     
-    # Calculate statistics
+    # Calculate statistics with new three-tier system
     total = len(detections_list)
-    border_count = sum(1 for d in detections_list if d.get('Has Border/Frame', 'No') == 'Yes')
-    no_border_count = total - border_count
     
-    # Determine manual review (high confidence borders that need attention)
-    manual_review_count = sum(1 for d in detections_list 
-                            if d.get('Has Border/Frame', 'No') == 'Yes' 
-                            and float(d.get('Confidence', 0)) >= config.get('CONFIDENCE_THRESHOLD_HIGH', 0.58))
+    # Categorize images based on confidence thresholds
+    invalid_images = []      # High confidence borders (≥0.58)
+    manual_review_images = []  # Medium confidence borders (0.35-0.58)
+    valid_images = []        # Low confidence borders (<0.35)
+    
+    for d in detections_list:
+        confidence = float(d.get('Confidence', 0))
+        if confidence >= config.get('CONFIDENCE_THRESHOLD_INVALID', 0.58):
+            invalid_images.append(d)
+        elif confidence >= config.get('CONFIDENCE_THRESHOLD_LOW', 0.35):
+            manual_review_images.append(d)
+        else:
+            valid_images.append(d)
+    
+    invalid_count = len(invalid_images)
+    manual_review_count = len(manual_review_images) 
+    valid_count = len(valid_images)
     
     print(f"\nSUMMARY:")
     print(f"  Total Images Processed: {total}")
-    print(f"  Valid Images: {no_border_count}")
-    print(f"  Invalid Images: {border_count - manual_review_count}")
+    print(f"  Valid Images: {valid_count}")
+    print(f"  Invalid Images: {invalid_count}")
     print(f"  Manual Review Needed (moved): {manual_review_count}")
-    print(f"  Success Rate: {(no_border_count/total*100):.1f}%" if total > 0 else "  Success Rate: 0%")
+    print(f"  Success Rate: {(valid_count/total*100):.1f}%" if total > 0 else "  Success Rate: 0%")
     
-    # Group results by categories
-    valid_images = []
-    invalid_images = []
-    manual_review_images = []
-    
-    for detection in detections_list:
-        filename = os.path.basename(detection.get('Image Path', ''))
-        confidence = float(detection.get('Confidence', 0))
-        border_type = detection.get('Border/Frame Type', 'Unknown')
-        
-        if detection.get('Has Border/Frame', 'No') == 'Yes':
-            reason = f"Border detected - {border_type} (confidence: {confidence:.2f})"
-            
-            if confidence >= config.get('CONFIDENCE_THRESHOLD_HIGH', 0.58):
-                manual_review_images.append((filename, reason))
-            else:
-                invalid_images.append((filename, reason))
-        else:
-            reason = f"No border detected (confidence: {confidence:.2f})"
-            valid_images.append((filename, reason))
-    
-    # Display each category
+    # Display each category with updated logic
     if valid_images:
         print(f"\nVALID IMAGES ({len(valid_images)} images):")
         print("-" * 120)
@@ -1804,7 +1865,12 @@ def print_main_style_border_summary(detections_list: list, config: dict) -> None
         print(f"\nINVALID IMAGES ({len(invalid_images)} images):")
         print("-" * 120)
         
-        for i, (filename, reason) in enumerate(invalid_images, 1):
+        for i, detection in enumerate(invalid_images, 1):
+            filename = os.path.basename(detection.get('Image Path', ''))
+            confidence = float(detection.get('Confidence', 0))
+            border_type = detection.get('Border/Frame Type', 'Unknown')
+            reason = f"Border detected - {border_type} (confidence: {confidence:.2f})"
+            
             print(f"\n{i:2d}. {filename}")
             print(f"    Failures:")
             print(f"      • Borders: {reason}")
@@ -1813,7 +1879,12 @@ def print_main_style_border_summary(detections_list: list, config: dict) -> None
         print(f"\nMANUAL REVIEW NEEDED ({len(manual_review_images)} images):")
         print("-" * 120)
         
-        for i, (filename, reason) in enumerate(manual_review_images, 1):
+        for i, detection in enumerate(manual_review_images, 1):
+            filename = os.path.basename(detection.get('Image Path', ''))
+            confidence = float(detection.get('Confidence', 0))
+            border_type = detection.get('Border/Frame Type', 'Unknown')
+            reason = f"Border detected - {border_type} (confidence: {confidence:.2f})"
+            
             print(f"\n{i:2d}. {filename}")
             print(f"    High-confidence border detected: {reason}")
     
@@ -1864,33 +1935,26 @@ def main(custom_config=None):
 
     # --- Transfer files based on detection results after post-processing ---
     for r in results:
-        # Determine destination based on detection results and manual review flag
-        manual_review = r.get('manual_review', False)
+        # Determine destination based on detection results and confidence thresholds
         confidence = r.get('confidence', 0.0)
         
-        # Check if image has border based on specific detection types OR confidence threshold
-        has_border = (r.get('simple_border', False) or 
-                     r.get('frame', False) or 
-                     r.get('textured_frame', False) or
-                     confidence > 0.58)  # Updated based on manual review findings
+        # Three-tier classification system:
+        # - Invalid: High border confidence (≥0.58) - images with clear borders
+        # - Manual Review: Medium border confidence (0.35-0.58) - needs human verification
+        # - Valid: Low border confidence (<0.35) - clean images
         
-        # Override manual review if confidence > 0.58 (these should be classified as bordered)
-        if confidence > 0.58:
-            manual_review = False
-            has_border = True
-        
-        if manual_review and config.get('SAVE_MANUAL_REVIEW_SEPARATELY', True):
-            # Manual review needed - separate folder
-            destination_dir = os.path.join(r['output_dir'], 'manualreview')
-            log_message = f"Copied photo needing manual review: {r['filename']} to {destination_dir} (confidence: {confidence:.3f})"
-        elif has_border:
-            # Border detected - main output folder  
-            destination_dir = os.path.join(r['output_dir'], 'valid')
-            log_message = f"Copied photo with border: {r['filename']} to {destination_dir} (confidence: {confidence:.3f})"
-        else:
-            # No border detected - invalid subfolder
+        if confidence >= config.get('CONFIDENCE_THRESHOLD_INVALID', 0.58):
+            # High confidence border detected - mark as invalid
             destination_dir = os.path.join(r['output_dir'], 'invalid')
-            log_message = f"Copied photo with no border: {r['filename']} to {destination_dir} (confidence: {confidence:.3f})"
+            log_message = f"Invalid - border detected: {r['filename']} to {destination_dir} (confidence: {confidence:.3f})"
+        elif confidence >= config.get('CONFIDENCE_THRESHOLD_LOW', 0.35):
+            # Medium confidence - manual review needed
+            destination_dir = os.path.join(r['output_dir'], 'manualreview')
+            log_message = f"Manual review needed: {r['filename']} to {destination_dir} (confidence: {confidence:.3f})"
+        else:
+            # Low confidence - valid (clean) image
+            destination_dir = os.path.join(r['output_dir'], 'valid')
+            log_message = f"Valid - no border detected: {r['filename']} to {destination_dir} (confidence: {confidence:.3f})"
 
         # Copy the original image to the determined destination
         try:
@@ -1948,7 +2012,7 @@ def main(custom_config=None):
         
         # Count high confidence detections
         confidence = float(detection['Confidence'])
-        if confidence >= 0.58:  # Using updated CONFIDENCE_THRESHOLD_HIGH
+        if confidence >= config.get('CONFIDENCE_THRESHOLD_INVALID', 0.58):
             high_confidence_count += 1
     
     # Convert results to unified format for main pipeline style summary
@@ -1969,7 +2033,7 @@ def main(custom_config=None):
 def has_border_or_frame(pil_img, show_debug=False, debug_output_dir="debug"):
     """
     Interface function for photo filter integration.
-    Uses the existing detect_border function with minimal wrapper.
+    Uses the new BorderDetector class with minimal wrapper.
     
     Parameters:
         pil_img (PIL.Image): Input image in PIL format
@@ -1988,10 +2052,11 @@ def has_border_or_frame(pil_img, show_debug=False, debug_output_dir="debug"):
             temp_path = temp_file.name
         
         try:
-            # Use the existing detect_border function
-            result = detect_border(temp_path, DEFAULT_CONFIG)
+            # Use the new BorderDetector class
+            detector = BorderDetector()
+            result = detector.detect(temp_path)
             
-            if result is None:
+            if result is None or result.get('error', False):
                 return True, "error"
             
             # Check if any border/frame was detected
@@ -2040,10 +2105,12 @@ def process_image(args):
         
         logger.info(f"Processing image: {filename}")
         
-        # Perform border detection
-        detection_result = detect_border(img_path, config)
+        # Perform border detection using the new BorderDetector class
+        config_manager = ConfigManager(base_config=config)
+        detector = BorderDetector(config_manager)
+        detection_result = detector.detect(img_path)
         
-        if detection_result is None:
+        if detection_result is None or detection_result.get('error', False):
             logger.error(f"Border detection failed for: {filename}")
             return None
         
@@ -2263,7 +2330,7 @@ def calculate_robust_confidence(detection_results, image, gray, has_uniform_bg,
     
     # Uniform background adjustment (context-dependent)
     if has_uniform_bg:
-        if base_evidence > config['CONFIDENCE_THRESHOLD_HIGH']:
+        if base_evidence > config['CONFIDENCE_THRESHOLD_INVALID']:
             # Strong evidence + uniform background = likely real border
             quality_factor *= 1.1
         else:
@@ -2276,7 +2343,7 @@ def calculate_robust_confidence(detection_results, image, gray, has_uniform_bg,
     
     # Vignette adjustment (only if significant)
     if has_vignette and vignette_score > 0.5:
-        if base_evidence < config['CONFIDENCE_THRESHOLD_HIGH']:
+        if base_evidence < config['CONFIDENCE_THRESHOLD_INVALID']:
             # Vignette without strong border evidence suggests natural effect
             quality_factor *= 0.9
     
@@ -2389,4 +2456,3 @@ if __name__ == "__main__":
     
     # Run main detection
     main(config)
-    main()

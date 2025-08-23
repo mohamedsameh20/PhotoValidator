@@ -13,6 +13,23 @@ Key features:
    20-25% confidence moved to manual review folder, <20% considered valid.
 """
 
+import os
+import warnings
+import logging
+import sys
+import argparse
+import shutil
+import time
+import contextlib
+import threading
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Tuple, Set, Optional, Any
+import psutil  # For performance monitoring
+import queue
+
 # Set critical environment variables BEFORE any imports
 import os
 os.environ['GLOG_minloglevel'] = '3'  # Only FATAL messages
@@ -97,6 +114,302 @@ def suppress_stdout_stderr():
             sys.stdout = old_stdout
             sys.stderr = old_stderr
 
+@dataclass
+class SystemConfiguration:
+    """Complete system configuration with validation and runtime tuning."""
+    # Processing behavior
+    processing_mode: str = 'parallel'  # 'sequential' or 'parallel'
+    max_concurrent_images: int = 4
+    
+    # Text detection thresholds
+    text_confidence_thresholds: Dict[str, float] = field(default_factory=lambda: {
+        'high_confidence': 80.0,
+        'medium_confidence': 60.0
+    })
+    
+    text_count_thresholds: Dict[str, int] = field(default_factory=lambda: {
+        'high_count': 5,
+        'medium_count': 2
+    })
+    
+    # Editing detection thresholds
+    editing_thresholds: Dict[str, float] = field(default_factory=lambda: {
+        'invalid_threshold': 25.0,
+        'manual_review_threshold': 20.0
+    })
+    
+    # Performance settings
+    cache_size: int = 10
+    enable_gpu: bool = False
+    gpu_id: int = 0
+    force_cpu: bool = False
+    quiet_mode: bool = False
+    enable_performance_monitoring: bool = True
+    
+    # Image validation parameters
+    min_file_size: int = 100  # Minimum file size in bytes
+    max_file_size_mb: int = 50  # Maximum file size in MB
+    min_image_width: int = 100  # Minimum image width in pixels
+    min_image_height: int = 100  # Minimum image height in pixels
+    
+    # Cache configuration
+    max_cache_size: int = 20  # Maximum number of cached validation results
+    cache_ttl_seconds: int = 300  # Cache time-to-live in seconds (5 minutes)
+    min_image_width: int = 100  # Minimum image width in pixels
+    min_image_height: int = 100  # Minimum image height in pixels
+    
+    # Cache configuration
+    max_cache_size: int = 20  # Maximum number of cached validation results
+    cache_ttl_seconds: int = 300  # Cache time-to-live in seconds (5 minutes)
+    
+    def validate(self) -> bool:
+        """Validate configuration parameters."""
+        try:
+            # Validate processing mode
+            if self.processing_mode not in ['sequential', 'parallel']:
+                raise ValueError(f"Invalid processing_mode: {self.processing_mode}")
+            
+            # Validate thresholds are positive
+            for threshold_group in [self.text_confidence_thresholds, self.editing_thresholds]:
+                for key, value in threshold_group.items():
+                    if not isinstance(value, (int, float)) or value < 0:
+                        raise ValueError(f"Invalid threshold {key}: {value}")
+            
+            # Validate text count thresholds are positive integers
+            for key, value in self.text_count_thresholds.items():
+                if not isinstance(value, int) or value < 0:
+                    raise ValueError(f"Invalid count threshold {key}: {value}")
+            
+            # Validate cache size
+            if self.cache_size < 1:
+                raise ValueError(f"Cache size must be at least 1: {self.cache_size}")
+            
+            # Validate image size constraints
+            if self.min_image_width < 1 or self.min_image_height < 1:
+                raise ValueError("Image size constraints must be positive")
+            
+            # Validate file size constraints
+            if self.min_file_size < 1:
+                raise ValueError(f"Minimum file size must be positive: {self.min_file_size}")
+            
+            if self.max_file_size_mb < 1:
+                raise ValueError(f"Maximum file size must be positive: {self.max_file_size_mb}")
+            
+            # Validate cache configuration
+            if self.max_cache_size < 1:
+                raise ValueError(f"Max cache size must be positive: {self.max_cache_size}")
+            
+            if self.cache_ttl_seconds < 1:
+                raise ValueError(f"Cache TTL must be positive: {self.cache_ttl_seconds}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Configuration validation failed: {e}")
+            return False
+    
+    @classmethod
+    def load_from_file(cls, config_path: str) -> 'SystemConfiguration':
+        """Load configuration from JSON file with validation."""
+        import json
+        try:
+            with open(config_path, 'r') as f:
+                config_dict = json.load(f)
+            
+            # Create instance with loaded data
+            config = cls()
+            
+            # Update fields that exist in the loaded data
+            for key, value in config_dict.items():
+                if hasattr(config, key):
+                    setattr(config, key, value)
+            
+            # Validate the loaded configuration
+            if not config.validate():
+                print(f"Loaded configuration is invalid, using defaults")
+                return cls()
+            
+            return config
+            
+        except Exception as e:
+            print(f"Failed to load configuration from {config_path}: {e}")
+            print("Using default configuration")
+            return cls()
+    
+    def save_to_file(self, config_path: str):
+        """Save configuration to JSON file."""
+        import json
+        try:
+            config_dict = {
+                'processing_mode': self.processing_mode,
+                'max_concurrent_images': self.max_concurrent_images,
+                'text_confidence_thresholds': self.text_confidence_thresholds,
+                'text_count_thresholds': self.text_count_thresholds,
+                'editing_thresholds': self.editing_thresholds,
+                'cache_size': self.cache_size,
+                'enable_gpu': self.enable_gpu,
+                'quiet_mode': self.quiet_mode,
+                'enable_performance_monitoring': self.enable_performance_monitoring,
+                'min_image_width': self.min_image_width,
+                'min_image_height': self.min_image_height
+            }
+            
+            with open(config_path, 'w') as f:
+                json.dump(config_dict, f, indent=2)
+            
+            print(f"Configuration saved to {config_path}")
+            
+        except Exception as e:
+            print(f"Failed to save configuration to {config_path}: {e}")
+
+class SystemHealthMonitor:
+    """Monitor system health and component availability with detailed reporting."""
+    
+    def __init__(self):
+        self.component_status = {}
+        self.error_counts = defaultdict(int)
+        self.success_counts = defaultdict(int)
+        self.error_history = defaultdict(list)
+        self.startup_time = time.time()
+        self.lock = threading.RLock()
+        # Component-specific error thresholds
+        self.error_thresholds = defaultdict(lambda: 10)  # Default threshold of 10 errors
+    
+    def record_success(self, component: str):
+        """Record a successful operation for a component."""
+        with self.lock:
+            self.success_counts[component] += 1
+            # Update component status to active if not already
+            if component not in self.component_status or self.component_status[component]['status'] != 'active':
+                self.component_status[component] = {
+                    'status': 'active',
+                    'last_update': time.time(),
+                    'details': 'Operating normally'
+                }
+    
+    def record_error(self, component: str, error_details: str):
+        """Record an error for a component."""
+        with self.lock:
+            self.error_counts[component] += 1
+            self.error_history[component].append({
+                'timestamp': time.time(),
+                'error': error_details
+            })
+            
+            # Update component status
+            self.component_status[component] = {
+                'status': 'error' if self.error_counts[component] > self.error_thresholds[component] else 'degraded',
+                'last_update': time.time(),
+                'error': error_details,
+                'error_count': self.error_counts[component]
+            }
+    
+    def get_error_count(self, component: str) -> int:
+        """Get the total error count for a component."""
+        with self.lock:
+            return self.error_counts[component]
+    
+    def get_success_count(self, component: str) -> int:
+        """Get the total success count for a component."""
+        with self.lock:
+            return self.success_counts[component]
+    
+    def is_healthy(self, component: str) -> bool:
+        """Check if a component is considered healthy."""
+        with self.lock:
+            return self.error_counts[component] <= self.error_thresholds[component]
+    
+    def get_status_summary(self) -> Dict[str, Dict[str, Any]]:
+        """Get a summary of all component statuses."""
+        with self.lock:
+            summary = {}
+            all_components = set(self.error_counts.keys()) | set(self.success_counts.keys())
+            
+            for component in all_components:
+                summary[component] = {
+                    'errors': self.error_counts[component],
+                    'successes': self.success_counts[component],
+                    'healthy': self.is_healthy(component),
+                    'status': self.component_status.get(component, {}).get('status', 'unknown')
+                }
+            
+            return summary
+    
+    def report_component_success(self, component: str, details: str = ""):
+        """Report successful component initialization."""
+        with self.lock:
+            self.component_status[component] = {
+                'status': 'active',
+                'last_update': time.time(),
+                'details': details
+            }
+    
+    def report_component_failure(self, component: str, error: Exception, fallback_available: bool = False):
+        """Report component failure with detailed logging."""
+        with self.lock:
+            self.component_status[component] = {
+                'status': 'failed',
+                'last_update': time.time(),
+                'error': str(error),
+                'fallback_available': fallback_available
+            }
+            self.error_counts[component] += 1
+            self.error_history[component].append({
+                'timestamp': time.time(),
+                'error': str(error),
+                'fallback_available': fallback_available
+            })
+        
+        # Provide user-visible warning about reduced functionality
+        if not fallback_available:
+            print(f"Warning: {component} is unavailable - {str(error)[:100]}")
+        else:
+            print(f"Info: {component} failed, using fallback - {str(error)[:100]}")
+    
+    def get_health_summary(self) -> Dict[str, Any]:
+        """Get comprehensive system health summary."""
+        with self.lock:
+            active_components = [comp for comp, status in self.component_status.items() 
+                               if status['status'] == 'active']
+            failed_components = [comp for comp, status in self.component_status.items() 
+                               if status['status'] == 'failed']
+            
+            return {
+                'uptime_seconds': time.time() - self.startup_time,
+                'total_components': len(self.component_status),
+                'active_components': len(active_components),
+                'failed_components': len(failed_components),
+                'component_details': dict(self.component_status),
+                'total_errors': sum(self.error_counts.values()),
+                'total_successes': sum(self.success_counts.values()),
+                'error_breakdown': dict(self.error_counts),
+                'success_breakdown': dict(self.success_counts)
+            }
+    
+    def print_health_report(self):
+        """Print a formatted health report."""
+        summary = self.get_health_summary()
+        uptime = summary['uptime_seconds']
+        
+        print("\n🏥 SYSTEM HEALTH REPORT")
+        print("=" * 50)
+        print(f"Uptime: {uptime:.1f}s")
+        print(f"Components: {summary['active_components']}/{summary['total_components']} active")
+        print(f"Total Operations: {summary['total_successes']} successes, {summary['total_errors']} errors")
+        
+        if summary['failed_components'] > 0:
+            print(f"Failed Components: {summary['failed_components']}")
+            for comp, status in summary['component_details'].items():
+                if status['status'] == 'failed':
+                    fallback_text = " (fallback available)" if status.get('fallback_available', False) else ""
+                    print(f"  X {comp}: {status['error'][:50]}{fallback_text}")
+        
+        if summary['total_errors'] > 0:
+            print(f"Total Errors: {summary['total_errors']}")
+            for comp, count in summary['error_breakdown'].items():
+                if count > 0:
+                    print(f"  {comp}: {count} errors")
+
 # Import optimized pipeline
 from optimized_pipeline import (
     get_unified_detector, 
@@ -116,94 +429,175 @@ def get_paddle_text_detector():
 # ===== CENTRALIZED UTILITIES (Integrated to eliminate redundancy) =====
 
 class ImageProcessor:
-    """Centralized image processing to eliminate redundancy across detectors"""
+    """Thread-safe, centralized image processing with configuration-driven validation"""
     
-    def __init__(self):
-        self.cache = {}  # Simple cache for recently processed images
-        self.max_cache_size = 10  # Increased cache size for better performance
+    def __init__(self, config: SystemConfiguration, health_monitor: SystemHealthMonitor):
+        self.config = config
+        self.health_monitor = health_monitor
+        self._cache = {}  # Image validation cache
+        self._cache_lock = threading.RLock()  # Thread-safe cache access
         self._pil_image = None  # Cached PIL Image reference
-    
+        self._last_cleanup = time.time()
+        
+        # Configuration-driven validation parameters
+        self.min_file_size = config.min_file_size
+        self.max_cache_size = config.max_cache_size
+        self.cache_ttl = config.cache_ttl_seconds
+        
     def load_and_validate_image(self, image_path: str) -> Tuple[bool, str, Optional[Dict]]:
         """
-        Load and validate image, return validation status and metadata.
-        OPTIMIZED: Uses caching and early validation to avoid redundant operations.
+        Thread-safe load and validate image with configuration-driven parameters.
         
         Returns:
             Tuple[bool, str, Optional[Dict]]: (is_valid, reason, metadata)
         """
-        # Check cache first
-        if image_path in self.cache:
-            cached = self.cache[image_path]
-            return cached['is_valid'], cached['reason'], cached['metadata']
+        with self._cache_lock:
+            # Periodic cache cleanup
+            current_time = time.time()
+            if current_time - self._last_cleanup > self.cache_ttl:
+                self._cleanup_expired_cache(current_time)
+                self._last_cleanup = current_time
+            
+            # Check cache first
+            cache_key = image_path
+            if cache_key in self._cache:
+                cached_entry = self._cache[cache_key]
+                if current_time - cached_entry['timestamp'] < self.cache_ttl:
+                    return cached_entry['is_valid'], cached_entry['reason'], cached_entry['metadata']
+                else:
+                    # Remove expired entry
+                    del self._cache[cache_key]
         
         try:
             # Fast pre-checks before expensive PIL operation
             if not os.path.exists(image_path):
                 result = (False, "File does not exist", None)
                 self._cache_result(image_path, result)
+                self.health_monitor.record_error("image_validation", "file_not_found")
                 return result
             
             file_ext = os.path.splitext(image_path)[1].lower()
             if file_ext not in SUPPORTED_FORMATS:
                 result = (False, f"Unsupported format: {file_ext}", None)
                 self._cache_result(image_path, result)
+                self.health_monitor.record_error("image_validation", "unsupported_format")
                 return result
             
-            # Quick file size check (avoid loading huge corrupt files)
+            # Configuration-driven file size validation
             file_size = os.path.getsize(image_path)
-            if file_size < 100:  # Less than 100 bytes is likely corrupt
-                result = (False, "File too small (likely corrupt)", None)
+            if file_size < self.min_file_size:
+                result = (False, f"File too small ({file_size} bytes, minimum {self.min_file_size})", None)
                 self._cache_result(image_path, result)
+                self.health_monitor.record_error("image_validation", "file_too_small")
                 return result
             
-            # Load image using PIL (most compatible) - OPTIMIZED: Load once, cache reference
+            # Configuration-driven maximum file size check
+            if hasattr(self.config, 'max_file_size_mb') and file_size > (self.config.max_file_size_mb * 1024 * 1024):
+                result = (False, f"File too large ({file_size / (1024*1024):.1f}MB, maximum {self.config.max_file_size_mb}MB)", None)
+                self._cache_result(image_path, result)
+                self.health_monitor.record_error("image_validation", "file_too_large")
+                return result
+            
+            # Load image using PIL with robust error handling
             from PIL import Image
             try:
                 with Image.open(image_path) as img:
                     width, height = img.size
                     format_info = img.format or file_ext.upper().lstrip('.')
                     
-                    # Basic validation - OPTIMIZED: Early exit on invalid dimensions
+                    # Configuration-driven dimension validation
                     if width == 0 or height == 0:
-                        result = (False, "Invalid dimensions", None)
+                        result = (False, "Invalid dimensions (0x0)", None)
                         self._cache_result(image_path, result)
+                        self.health_monitor.record_error("image_validation", "invalid_dimensions")
                         return result
                     
-                    # OPTIMIZED: Skip minimum size check here, do it in main processing
+                    # Check minimum dimensions from config
+                    if hasattr(self.config, 'min_image_width') and width < self.config.min_image_width:
+                        result = (False, f"Image width too small ({width}px, minimum {self.config.min_image_width}px)", None)
+                        self._cache_result(image_path, result)
+                        self.health_monitor.record_error("image_validation", "width_too_small")
+                        return result
+                    
+                    if hasattr(self.config, 'min_image_height') and height < self.config.min_image_height:
+                        result = (False, f"Image height too small ({height}px, minimum {self.config.min_image_height}px)", None)
+                        self._cache_result(image_path, result)
+                        self.health_monitor.record_error("image_validation", "height_too_small")
+                        return result
+                    
+                    # Create comprehensive metadata
                     metadata = {
                         'width': width,
                         'height': height,
                         'format': format_info,
                         'file_size': file_size,
                         'path': image_path,
-                        'filename': os.path.basename(image_path)
+                        'filename': os.path.basename(image_path),
+                        'aspect_ratio': width / height if height > 0 else 0,
+                        'megapixels': (width * height) / 1_000_000
                     }
                     
                     result = (True, "Valid image", metadata)
                     self._cache_result(image_path, result)
+                    self.health_monitor.record_success("image_validation")
                     return result
+                    
             except Exception as pil_error:
                 result = (False, f"PIL cannot read image: {str(pil_error)}", None)
                 self._cache_result(image_path, result)
+                self.health_monitor.record_error("image_validation", f"pil_error: {str(pil_error)}")
                 return result
                 
         except Exception as e:
             result = (False, f"Image validation error: {str(e)}", None)
             self._cache_result(image_path, result)
+            self.health_monitor.record_error("image_validation", f"general_error: {str(e)}")
             return result
     
     def _cache_result(self, image_path: str, result: Tuple):
-        """Cache validation result to avoid redundant processing"""
-        if len(self.cache) >= self.max_cache_size:
-            # Remove oldest entry (simple LRU)
-            oldest_key = next(iter(self.cache))
-            del self.cache[oldest_key]
-        
-        self.cache[image_path] = {
-            'is_valid': result[0],
-            'reason': result[1], 
-            'metadata': result[2]
-        }
+        """Thread-safe cache management with TTL and size limits"""
+        with self._cache_lock:
+            # Enforce cache size limit with LRU eviction
+            if len(self._cache) >= self.max_cache_size:
+                # Remove oldest entry by timestamp
+                oldest_key = min(self._cache.keys(), 
+                               key=lambda k: self._cache[k]['timestamp'])
+                del self._cache[oldest_key]
+            
+            # Store result with timestamp for TTL
+            self._cache[image_path] = {
+                'is_valid': result[0],
+                'reason': result[1], 
+                'metadata': result[2],
+                'timestamp': time.time()
+            }
+    
+    def _cleanup_expired_cache(self, current_time: float):
+        """Remove expired cache entries"""
+        expired_keys = [
+            key for key, entry in self._cache.items()
+            if current_time - entry['timestamp'] > self.cache_ttl
+        ]
+        for key in expired_keys:
+            del self._cache[key]
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache performance statistics"""
+        with self._cache_lock:
+            return {
+                'cache_size': len(self._cache),
+                'max_cache_size': self.max_cache_size,
+                'cache_utilization': len(self._cache) / self.max_cache_size * 100,
+                'oldest_entry_age': min([
+                    time.time() - entry['timestamp'] 
+                    for entry in self._cache.values()
+                ], default=0)
+            }
+    
+    def clear_cache(self):
+        """Clear the validation cache"""
+        with self._cache_lock:
+            self._cache.clear()
 
 class OutputManager:
     """Centralized output management to eliminate redundant file operations"""
@@ -251,13 +645,34 @@ class OutputManager:
 # Global instances to eliminate redundancy
 _global_processor = None
 _global_output_manager = None
+_global_config = None
+_global_health_monitor = None
 
 def get_processor() -> ImageProcessor:
-    """Get global image processor instance"""
-    global _global_processor
+    """Get global image processor instance with configuration and health monitoring"""
+    global _global_processor, _global_config, _global_health_monitor
     if _global_processor is None:
-        _global_processor = ImageProcessor()
+        # Initialize configuration and health monitor if not already done
+        if _global_config is None:
+            _global_config = SystemConfiguration()
+        if _global_health_monitor is None:
+            _global_health_monitor = SystemHealthMonitor()
+        _global_processor = ImageProcessor(_global_config, _global_health_monitor)
     return _global_processor
+
+def get_config() -> SystemConfiguration:
+    """Get global configuration instance"""
+    global _global_config
+    if _global_config is None:
+        _global_config = SystemConfiguration()
+    return _global_config
+
+def get_health_monitor() -> SystemHealthMonitor:
+    """Get global health monitor instance"""
+    global _global_health_monitor
+    if _global_health_monitor is None:
+        _global_health_monitor = SystemHealthMonitor()
+    return _global_health_monitor
 
 def get_output_manager() -> OutputManager:
     """Get global output manager instance"""
@@ -584,6 +999,10 @@ def process_single_image_with_text_detection(
     manual_review_reasons = []
     overall_valid = True
     
+    # Get configuration and health monitor
+    config = get_config()
+    health_monitor = get_health_monitor()
+    
     try:
         # Phase 1: Basic validation using integrated processor (OPTIMIZED: eliminates redundancy)
         try:
@@ -599,19 +1018,11 @@ def process_single_image_with_text_detection(
                 if not dry_run:
                     copy_file_to_new_structure(image_path, 'invalid', reason, filename)
                 
+                health_monitor.record_error("image_processing", "basic_validation_failed")
                 return filename, False, reason, 'invalid', {'basic_validation': {'passed': False, 'reason': reason}}
             
-            # OPTIMIZED: Only check size if basic validation passes
-            MIN_WIDTH, MIN_HEIGHT = 100, 100
-            if img_metadata['width'] < MIN_WIDTH or img_metadata['height'] < MIN_HEIGHT:
-                reason = f'Image too small: {img_metadata["width"]}x{img_metadata["height"]} (minimum: {MIN_WIDTH}x{MIN_HEIGHT})'
-                if show_progress:
-                    print(f"  X FAIL Size check: {reason}")
-                
-                if not dry_run:
-                    copy_file_to_new_structure(image_path, 'invalid', reason, filename)
-                
-                return filename, False, reason, 'invalid', {'basic_validation': {'passed': False, 'reason': reason}}
+            # OPTIMIZED: Size validation now handled by ImageProcessor using config
+            # The processor already validates min_image_width and min_image_height from config
             
             if show_progress:
                 print(f"  ✓ PASS Basic validation (format: {img_metadata['format']}, size: {img_metadata['width']}x{img_metadata['height']})")
@@ -626,6 +1037,7 @@ def process_single_image_with_text_detection(
             if not dry_run:
                 copy_file_to_new_structure(image_path, 'invalid', reason, filename)
             
+            health_monitor.record_error("image_processing", f"validation_exception: {str(e)}")
             return filename, False, reason, 'invalid', {'basic_validation': {'passed': False, 'reason': reason}}
         
         # Phase 2: Text Detection using PaddleOCR (OPTIMIZED: if enabled and available)
@@ -853,6 +1265,12 @@ def parse_arguments():
                        help='Suppress detailed progress output')
     parser.add_argument('--sequential-mode', action='store_true',
                        help='Run tests sequentially, stop on first failure (specs->borders->watermarks->editing->text)')
+    parser.add_argument('--gpu', action='store_true',
+                       help='Enable GPU acceleration for supported detectors')
+    parser.add_argument('--cpu', action='store_true',
+                       help='Force CPU usage for all detectors')
+    parser.add_argument('--gpu-id', type=int, default=0,
+                       help='GPU device ID to use (default: 0)')
     
     return parser.parse_args()
 
@@ -886,6 +1304,11 @@ def print_results_table(results: List[Tuple], enabled_tests: set = None):
         print(f"{'Filename':<50} {'Editing Confidence':<20} {'Assessment':<30}")
         print("-" * 120)
         
+        # Get configuration for thresholds
+        config = get_config()
+        invalid_threshold = config.editing_thresholds['invalid_threshold']
+        manual_review_threshold = config.editing_thresholds['manual_review_threshold']
+        
         # Extract editing confidence from results
         editing_results = []
         for filename, is_valid, reason, category, detailed_results in results:
@@ -897,12 +1320,12 @@ def print_results_table(results: List[Tuple], enabled_tests: set = None):
                 editing_data = detailed_results['editing']
                 editing_confidence = editing_data.get('editing_confidence', 0.0)
                 
-                if editing_confidence >= 25.0:
-                    assessment = "INVALID - High editing"
-                elif editing_confidence >= 20.0:
-                    assessment = "MANUAL REVIEW - Medium editing"
+                if editing_confidence >= invalid_threshold:
+                    assessment = f"INVALID - High editing (≥{invalid_threshold}%)"
+                elif editing_confidence >= manual_review_threshold:
+                    assessment = f"MANUAL REVIEW - Medium editing (≥{manual_review_threshold}%)"
                 else:
-                    assessment = "VALID - Minimal editing"
+                    assessment = f"VALID - Minimal editing (<{manual_review_threshold}%)"
             elif detailed_results:
                 # Check if editing results are in unified_processing results
                 unified = detailed_results.get('unified_processing', {})
@@ -910,12 +1333,12 @@ def print_results_table(results: List[Tuple], enabled_tests: set = None):
                     editing_data = unified['results']['editing']
                     editing_confidence = editing_data.get('editing_confidence', 0.0)
                     
-                    if editing_confidence >= 25.0:
-                        assessment = "INVALID - High editing"
-                    elif editing_confidence >= 20.0:
-                        assessment = "MANUAL REVIEW - Medium editing"
+                    if editing_confidence >= invalid_threshold:
+                        assessment = f"INVALID - High editing (≥{invalid_threshold}%)"
+                    elif editing_confidence >= manual_review_threshold:
+                        assessment = f"MANUAL REVIEW - Medium editing (≥{manual_review_threshold}%)"
                     else:
-                        assessment = "VALID - Minimal editing"
+                        assessment = f"VALID - Minimal editing (<{manual_review_threshold}%)"
             
             editing_results.append((filename, editing_confidence, assessment))
         
@@ -928,7 +1351,7 @@ def print_results_table(results: List[Tuple], enabled_tests: set = None):
             print(f"{filename_short:<50} {confidence:>8.1f}%{'':<11} {assessment:<30}")
         
         print("-" * 120)
-        print("Note: Images with confidence ≥25% are moved to INVALID folder, 20-25% to MANUAL REVIEW folder.")
+        print(f"Note: Images with confidence ≥{invalid_threshold}% are moved to INVALID folder, {manual_review_threshold}-{invalid_threshold}% to MANUAL REVIEW folder.")
         
     # Summary statistics 
     total = len(results)
@@ -1116,6 +1539,13 @@ def main():
     create_output_directories()
     logger = setup_logging()
     
+    # Create system configuration with device settings
+    config = SystemConfiguration(
+        enable_gpu=args.gpu,
+        force_cpu=args.cpu,
+        gpu_id=args.gpu_id
+    )
+    
     # Check PyTorch environment early to warn about potential issues (silently)
     pytorch_info = check_pytorch_environment()
     
@@ -1217,7 +1647,7 @@ def main():
                 # OPTIMIZED: Now initialize the detector with minimal parameters
                 text_detector = PaddleTextDetector(
                     input_folder=args.source, 
-                    use_gpu=False,  # CPU-only for better compatibility
+                    use_gpu=config.enable_gpu and not config.force_cpu,  # Use GPU if enabled and not forced to CPU
                     use_textline_orientation=False,  # OPTIMIZED: Disable orientation detection for speed
                     lang='en'
                 )
@@ -1258,7 +1688,16 @@ def main():
     unified_detector = None
     other_tests = enabled_tests - {'text'}
     if other_tests:
-        unified_detector = get_unified_detector()
+        # Create pipeline configuration from system configuration
+        from optimized_pipeline import PipelineConfig, reset_unified_detector
+        pipeline_config = PipelineConfig()
+        pipeline_config.device = 'cuda' if (config.enable_gpu and not config.force_cpu) else 'cpu'
+        pipeline_config.gpu_id = config.gpu_id
+        pipeline_config.force_cpu = config.force_cpu
+        
+        # Reset global detector to ensure it uses the new configuration
+        reset_unified_detector()
+        unified_detector = get_unified_detector(pipeline_config)
     
     for i, image_path in enumerate(image_files, 1):
         filename = os.path.basename(image_path)

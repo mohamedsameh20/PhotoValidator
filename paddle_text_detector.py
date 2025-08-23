@@ -1,12 +1,12 @@
 """
 PaddleOCR-Based Text Detection System - PRODUCTION READY & COMPLETELY INDEPENDENT
 
-⚡ STANDALONE SYSTEM - Does NOT use or depend on text_detector.py ⚡
+STANDALONE SYSTEM - Does NOT use or depend on text_detector.py
 
 State-of-the-art text detection using PaddlePaddle's DB (Differentiable Binarization) model
 PERFORMANCE TARGET: <100ms per image with superior accuracy
 
-🚀 COMPLETE INDEPENDENCE:
+COMPLETE INDEPENDENCE:
 - No imports from text_detector.py or any legacy systems
 - Uses PaddleOCR DB (Differentiable Binarization) model directly
 - Completely separate folder structure: PADDLE_OCR_RESULTS/
@@ -33,18 +33,21 @@ import time
 import logging
 import threading
 import warnings
+import platform
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Union
-from dataclasses import dataclass
+from typing import Dict, List, Tuple, Optional, Union, TypedDict
+from dataclasses import dataclass, field
 import shutil
 from PIL import Image
 import traceback
+from functools import wraps
 
-# Suppress PaddleOCR warnings for cleaner output
-warnings.filterwarnings("ignore", category=UserWarning, module="paddle")
-warnings.filterwarnings("ignore", category=UserWarning, message=".*ccache.*")
-warnings.filterwarnings("ignore", category=UserWarning, message=".*recompiling.*")
+# More targeted warning suppression (keep important warnings visible)
+warnings.filterwarnings("ignore", message=".*ccache.*")
+warnings.filterwarnings("ignore", message=".*recompiling.*")
 warnings.filterwarnings("ignore", message=".*Could not find files for the given pattern.*")
+warnings.filterwarnings("ignore", message=".*deprecated.*", category=DeprecationWarning)
+# Keep other UserWarnings visible for debugging
 
 # Set environment variables to reduce PaddlePaddle logging noise
 os.environ['GLOG_minloglevel'] = '2'
@@ -79,12 +82,164 @@ try:
     # print("PaddleOCR successfully imported")  # Suppressed for clean output
 except ImportError as e:
     PADDLE_AVAILABLE = False
-    print(f"✗ PaddleOCR not available: {e}")
+    print(f"PaddleOCR not available: {e}")
     print("Install with: pip install paddlepaddle paddleocr")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Type definitions for better type safety
+class BatchResult(TypedDict):
+    """Typed structure for batch processing results."""
+    batch_processing_success: bool
+    total_images: int
+    successfully_processed: int
+    processing_time_seconds: float
+    average_time_per_image_ms: float
+    average_time_per_image_seconds: float
+    statistics: Dict
+    results: List[Dict]
+    organization_folders: Dict[str, str]
+    performance_summary: Dict
+
+class ProcessingResult(TypedDict):
+    """Typed structure for single image processing results."""
+    image_path: str
+    processing_success: bool
+    processing_time_ms: float
+    ocr_time_ms: float
+    image_dimensions: Tuple[int, int]
+    text_detections: int
+    paddle_results: List[Dict]
+    confidence_metrics: Dict
+    organization_result: Dict
+    method: str
+
+@dataclass
+class PaddleDetectorConfig:
+    """Configuration for PaddleTextDetector with cross-platform support."""
+    # Core detection parameters
+    confidence_threshold: float = 0.5
+    recognition_threshold: float = 0.6
+    min_text_length: int = 1
+    max_text_length: int = 500
+    angle_threshold: float = 15
+    min_bbox_area: int = 50
+    
+    # Performance parameters
+    use_gpu: bool = False
+    lang: str = 'en'
+    use_textline_orientation: bool = True
+    det_model_dir: Optional[str] = None
+    rec_model_dir: Optional[str] = None
+    
+    # Processing options
+    use_dilation: bool = True
+    save_crop_res: bool = False
+    crop_res_save_dir: str = './crop_results'
+    
+    # Cross-platform paths (auto-detected if None)
+    base_directory: Optional[Path] = None
+    input_folder: Optional[Path] = None
+    
+    def __post_init__(self):
+        """Initialize platform-specific paths if not provided."""
+        if self.base_directory is None:
+            # Use current working directory or detected project root
+            self.base_directory = self._detect_project_root()
+        
+        if self.input_folder is None:
+            self.input_folder = self.base_directory
+    
+    def _detect_project_root(self) -> Path:
+        """Detect project root directory in a cross-platform way."""
+        # Try to find project root by looking for common project files
+        current = Path.cwd()
+        
+        # Look for project indicators
+        project_indicators = [
+            'requirements.txt', 'setup.py', 'pyproject.toml', 
+            '.git', 'README.md', 'main.py'
+        ]
+        
+        # Traverse up the directory tree
+        for parent in [current] + list(current.parents):
+            if any((parent / indicator).exists() for indicator in project_indicators):
+                logger.info(f"Detected project root: {parent}")
+                return parent
+        
+        # Fallback to current working directory
+        logger.info(f"Using current working directory as project root: {current}")
+        return current
+    
+    @classmethod
+    def from_file(cls, config_path: Union[str, Path]) -> 'PaddleDetectorConfig':
+        """Load configuration from JSON file."""
+        config_path = Path(config_path)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+        
+        with open(config_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Convert path strings to Path objects
+        if 'base_directory' in data and data['base_directory']:
+            data['base_directory'] = Path(data['base_directory'])
+        if 'input_folder' in data and data['input_folder']:
+            data['input_folder'] = Path(data['input_folder'])
+        
+        return cls(**data)
+    
+    def save_to_file(self, config_path: Union[str, Path]):
+        """Save configuration to JSON file."""
+        config_path = Path(config_path)
+        
+        # Convert to serializable format
+        data = {}
+        for key, value in self.__dict__.items():
+            if isinstance(value, Path):
+                data[key] = str(value)
+            else:
+                data[key] = value
+        
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        
+        logger.info(f"Configuration saved to: {config_path}")
+
+def monitor_performance(func):
+    """Decorator to monitor function performance and memory usage."""
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        start_time = time.time()
+        
+        # Try to get memory info if psutil is available
+        start_memory = None
+        try:
+            import psutil
+            start_memory = psutil.Process().memory_info().rss
+        except ImportError:
+            pass
+        
+        result = func(self, *args, **kwargs)
+        
+        end_time = time.time()
+        execution_time = end_time - start_time
+        
+        if start_memory is not None:
+            try:
+                end_memory = psutil.Process().memory_info().rss
+                memory_delta = (end_memory - start_memory) / 1024 / 1024  # MB
+                logger.debug(f"{func.__name__}: {execution_time:.2f}s, Memory: {memory_delta:+.1f}MB")
+            except:
+                logger.debug(f"{func.__name__}: {execution_time:.2f}s")
+        else:
+            logger.debug(f"{func.__name__}: {execution_time:.2f}s")
+        
+        return result
+    return wrapper
 
 @dataclass
 class PaddleTextResult:
@@ -110,10 +265,11 @@ class PaddleValidationResult:
 
 class PaddleTextDetector:
     """
-    🚀 STANDALONE Production-ready PaddleOCR text detection system
+    STANDALONE Production-ready PaddleOCR text detection system
     
-    ⚡ COMPLETELY INDEPENDENT - No dependencies on text_detector.py or legacy systems
-    🔒 THREAD-SAFE - Uses threading locks to prevent PaddleOCR conflicts
+    COMPLETELY INDEPENDENT - No dependencies on text_detector.py or legacy systems
+    THREAD-SAFE - Uses threading locks to prevent PaddleOCR conflicts
+    CROSS-PLATFORM - Works on Windows, Linux, and macOS
     
     Superior accuracy with state-of-the-art DB model:
     - Uses PaddleOCR's Differentiable Binarization (DB) model
@@ -121,18 +277,32 @@ class PaddleTextDetector:
     - Independent processing pipeline
     - Separate result organization in PADDLE_OCR_RESULTS/
     - No shared code with old text detection systems
+    - GPU memory management and OOM handling
     """
     
     # Class-level threading lock for PaddleOCR instances
     _paddle_lock = threading.Lock()
     
     def __init__(self, 
-                 input_folder: str = r"C:\Users\Public\Python\ittask",
-                 use_gpu: bool = False,
-                 use_textline_orientation: bool = True,  # Updated parameter name
-                 lang: str = 'en',
+                 config: Optional[PaddleDetectorConfig] = None,
+                 input_folder: Optional[str] = None,
+                 use_gpu: Optional[bool] = None,
+                 use_textline_orientation: Optional[bool] = None,
+                 lang: Optional[str] = None,
                  det_model_dir: Optional[str] = None,
                  rec_model_dir: Optional[str] = None):
+        """
+        Initialize PaddleTextDetector with flexible configuration.
+        
+        Args:
+            config: Configuration object (recommended approach)
+            input_folder: Override input folder (for backward compatibility)
+            use_gpu: Override GPU setting (for backward compatibility)
+            use_textline_orientation: Override orientation setting
+            lang: Override language setting
+            det_model_dir: Override detection model directory
+            rec_model_dir: Override recognition model directory
+        """
         
         if not PADDLE_AVAILABLE:
             raise ImportError(
@@ -141,55 +311,72 @@ class PaddleTextDetector:
                 "For GPU support: pip install paddlepaddle-gpu"
             )
         
-        self.input_folder = Path(input_folder)
+        # Initialize configuration
+        if config is None:
+            config = PaddleDetectorConfig()
+        
+        # Apply parameter overrides for backward compatibility
+        if input_folder is not None:
+            config.input_folder = Path(input_folder)
+        if use_gpu is not None:
+            config.use_gpu = use_gpu
+        if use_textline_orientation is not None:
+            config.use_textline_orientation = use_textline_orientation
+        if lang is not None:
+            config.lang = lang
+        if det_model_dir is not None:
+            config.det_model_dir = det_model_dir
+        if rec_model_dir is not None:
+            config.rec_model_dir = rec_model_dir
+        
+        self.config = config
+        self.input_folder = config.input_folder
+        self.use_gpu = config.use_gpu
         self.supported_formats = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
         
-        # Performance and quality parameters
-        self.config = {
-            'confidence_threshold': 0.5,      # Detection confidence threshold
-            'recognition_threshold': 0.6,     # Recognition confidence threshold
-            'min_text_length': 1,             # Minimum text length
-            'max_text_length': 500,           # Maximum text length
-            'angle_threshold': 15,            # Maximum angle for text rotation
-            'min_bbox_area': 50,              # Minimum bounding box area
-            'use_dilation': True,             # Use dilation for better detection
-            'save_crop_res': False,           # Save cropped text regions
-            'crop_res_save_dir': './crop_results'
-        }
-        
         # Initialize PaddleOCR models
-        self._initialize_paddle_models(use_gpu, use_textline_orientation, lang, det_model_dir, rec_model_dir)
+        self._initialize_paddle_models()
         
-        # Setup organization folders
+        # Setup cross-platform organization folders
         self.setup_organization_folders()
         
         logger.info(f"PaddleTextDetector initialized successfully")
-        logger.info(f"GPU enabled: {use_gpu}")
-        logger.info(f"Textline orientation: {use_textline_orientation}")
-        logger.info(f"Language: {lang}")
+        logger.info(f"Platform: {platform.system()}")
+        logger.info(f"Base directory: {config.base_directory}")
+        logger.info(f"Input folder: {self.input_folder}")
+        logger.info(f"GPU enabled: {config.use_gpu}")
+        logger.info(f"Textline orientation: {config.use_textline_orientation}")
+        logger.info(f"Language: {config.lang}")
     
-    def _initialize_paddle_models(self, use_gpu: bool, use_textline_orientation: bool, lang: str,
-                                det_model_dir: Optional[str], rec_model_dir: Optional[str]):
-        """Initialize PaddleOCR models with thread-safe initialization and stability optimizations"""
+    def _initialize_paddle_models(self):
+        """Initialize PaddleOCR models with thread-safe initialization and GPU memory management"""
         
         # Thread-safe initialization using class-level lock
         with self._paddle_lock:
             try:
-                logger.info(f"🔒 Thread-safe initialization of PaddleOCR v3.1.0...")
+                logger.info(f"Thread-safe initialization of PaddleOCR v3.1.0...")
                 
                 # Minimal parameters to prevent "Unknown exception" errors
                 base_params = {
-                    'lang': lang,
-                    'use_angle_cls': use_textline_orientation,
+                    'lang': self.config.lang,
+                    'use_angle_cls': self.config.use_textline_orientation,
                 }
                 
                 # Add custom model paths if provided
-                if det_model_dir:
-                    base_params['det_model_dir'] = det_model_dir
-                if rec_model_dir:
-                    base_params['rec_model_dir'] = rec_model_dir
+                if self.config.det_model_dir:
+                    base_params['det_model_dir'] = self.config.det_model_dir
+                if self.config.rec_model_dir:
+                    base_params['rec_model_dir'] = self.config.rec_model_dir
                 
-                logger.info(f"Initializing PaddleOCR with minimal parameters: {base_params}")
+                # Add GPU configuration if enabled
+                if self.config.use_gpu:
+                    base_params['use_gpu'] = True
+                    logger.info("GPU support enabled for PaddleOCR")
+                    
+                    # Clear GPU memory before initialization
+                    self.clear_gpu_memory()
+                
+                logger.info(f"Initializing PaddleOCR with parameters: {base_params}")
                 
                 # Initialize full OCR model with complete output suppression
                 with warnings.catch_warnings():
@@ -201,29 +388,95 @@ class PaddleTextDetector:
                 # This avoids unsupported 'rec' parameter issues
                 self.ocr_detection_only = self.ocr_full
                 
-                logger.info("✅ Thread-safe PaddleOCR models initialized successfully")
+                logger.info("Thread-safe PaddleOCR models initialized successfully")
                 
             except Exception as e:
                 logger.error(f"Failed to initialize PaddleOCR models: {e}")
                 logger.error(f"Error details: {traceback.format_exc()}")
                 raise
     
+    def clear_gpu_memory(self):
+        """Clear GPU memory cache if using GPU."""
+        if self.config.use_gpu:
+            try:
+                # Try PaddlePaddle GPU memory clearing
+                try:
+                    import paddle
+                    if hasattr(paddle, 'device') and hasattr(paddle.device, 'cuda'):
+                        paddle.device.cuda.empty_cache()
+                        logger.debug("PaddlePaddle GPU memory cleared")
+                except:
+                    pass
+                
+                # Also try PyTorch if available (in case of mixed GPU usage)
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        logger.debug("PyTorch GPU memory cleared")
+                except:
+                    pass
+                    
+            except Exception as e:
+                logger.warning(f"Failed to clear GPU memory: {e}")
+    
+    def validate_installation(self) -> bool:
+        """Validate PaddleOCR installation and functionality."""
+        try:
+            logger.info("Validating PaddleOCR installation...")
+            
+            # Create test image with text
+            test_img = np.ones((100, 300, 3), dtype=np.uint8) * 255
+            cv2.putText(test_img, "TEST", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+            
+            # Test detection
+            results = self.detect_and_recognize_text(test_img)
+            validation_success = len(results) > 0 and any("TEST" in r.text.upper() for r in results)
+            
+            if validation_success:
+                logger.info("PaddleOCR installation validation PASSED")
+            else:
+                logger.warning("PaddleOCR installation validation FAILED - no text detected in test image")
+            
+            return validation_success
+            
+        except Exception as e:
+            logger.error(f"PaddleOCR validation failed: {e}")
+            return False
+    
     def setup_organization_folders(self):
-        """Set up folder structure for confidence-based organization - completely separate from old system"""
-        # Create paddle-specific organization folder in the main ittask directory
-        main_directory = Path(r"C:\Users\Public\Python\ittask")
-        self.organized_images_dir = main_directory / "PADDLE_OCR_RESULTS"
+        """Set up cross-platform folder structure for confidence-based organization."""
+        # Use configuration-based base directory (cross-platform)
+        base_directory = self.config.base_directory
+        self.organized_images_dir = base_directory / "PADDLE_OCR_RESULTS"
+        
+        # Create organization subdirectories
         self.invalid_folder = self.organized_images_dir / "INVALID_WATERMARKED"        # High confidence text detected
         self.manual_review_folder = self.organized_images_dir / "MANUAL_REVIEW"       # Medium confidence
         self.valid_folder = self.organized_images_dir / "VALID_CLEAN"                 # Low/no text confidence
         self.debug_folder = self.organized_images_dir / "DEBUG_VISUALIZATIONS"        # Debug outputs
         
-        # Create directories
-        for folder in [self.organized_images_dir, self.invalid_folder, 
-                      self.manual_review_folder, self.valid_folder, self.debug_folder]:
-            folder.mkdir(parents=True, exist_ok=True)
+        # Create directories with proper error handling
+        folders_to_create = [
+            self.organized_images_dir, 
+            self.invalid_folder,
+            self.manual_review_folder, 
+            self.valid_folder, 
+            self.debug_folder
+        ]
         
-        logger.info(f"PaddleOCR organization folders created (completely independent):")
+        for folder in folders_to_create:
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                logger.debug(f"Created directory: {folder}")
+            except Exception as e:
+                logger.error(f"Failed to create directory {folder}: {e}")
+                raise
+        
+        logger.info(f"Cross-platform PaddleOCR organization folders created:")
+        logger.info(f"  Platform: {platform.system()}")
+        logger.info(f"  Base directory: {base_directory}")
+        logger.info(f"  Organization root: {self.organized_images_dir}")
         logger.info(f"  - INVALID_WATERMARKED: {self.invalid_folder}")
         logger.info(f"  - MANUAL_REVIEW: {self.manual_review_folder}")
         logger.info(f"  - VALID_CLEAN: {self.valid_folder}")
@@ -283,11 +536,12 @@ class PaddleTextDetector:
             logger.error(f"Text detection failed: {e}")
             return []
     
+    @monitor_performance
     def detect_and_recognize_text(self, image: Union[str, np.ndarray], 
                                 detection_only: bool = False) -> List[PaddleTextResult]:
         """
         Complete text detection and recognition pipeline using PaddleOCR v3.x API
-        with enhanced error handling for robustness
+        with enhanced error handling for robustness and GPU memory management.
         
         Args:
             image: Image file path or numpy array
@@ -297,82 +551,124 @@ class PaddleTextDetector:
             List of PaddleTextResult objects
         """
         try:
-            # Handle input format
-            if isinstance(image, str):
-                img_array = cv2.imread(image)
-                if img_array is None:
-                    logger.error(f"Could not load image: {image}")
-                    return []
-                image_path = image
-            else:
-                img_array = image
-                image_path = "numpy_array"
-            
-            start_time = time.time()
-            logger.info(f"Starting OCR processing for: {image_path}")
-            logger.info(f"Image shape: {img_array.shape}")
-            
-            # Enhanced error handling for PaddleOCR v3.1.0 API with proper method calls
-            ocr_results = None
-            last_error = None
-            
-            # Preprocess image first to prevent common issues
-            processed_img = self._validate_and_preprocess_image(img_array, image_path)
+            # Step 1: Preprocess image
+            processed_img, image_path = self._preprocess_input_image(image)
             if processed_img is None:
-                logger.error(f"Image preprocessing failed for: {image_path}")
                 return []
             
-            # Thread-safe OCR execution using class-level lock
-            with self._paddle_lock:
-                # Strategy 1: Try with standard call (no 'cls' argument)
-                try:
-                    logger.debug("🔒 Thread-safe OCR with standard call (no 'cls' argument)")
-                    # Convert BGR to RGB for better compatibility
-                    img_rgb = cv2.cvtColor(processed_img, cv2.COLOR_BGR2RGB)
-                    ocr_results = self.ocr_full.ocr(img_rgb)
-                except Exception as e1:
-                    last_error = e1
-                    error_msg = str(e1).lower()
-                    logger.warning(f"OCR attempt 1 failed: {e1}")
-                    # Strategy 2: Try with original BGR image
-                    try:
-                        logger.debug("🔒 Thread-safe OCR with BGR image")
-                        ocr_results = self.ocr_full.ocr(processed_img)
-                    except Exception as e2:
-                        last_error = e2
-                        logger.warning(f"OCR attempt 2 failed: {e2}")
-                        logger.error(f"All OCR strategies failed. Last error: {e2}")
-                        # Return graceful failure
-                        logger.warning(f"Image appears incompatible with PaddleOCR v3.1.0")
-                        return []
-            
-            # Check if we got valid results
+            # Step 2: Execute OCR with fallback strategies
+            ocr_results = self._execute_paddle_ocr_with_fallback(processed_img, image_path)
             if ocr_results is None:
-                logger.error(f"OCR failed completely for {image_path}. Last error: {last_error}")
                 return []
             
-            processing_time = (time.time() - start_time) * 1000
-            logger.info(f"Thread-safe OCR completed in {processing_time:.2f}ms")
-            logger.debug(f"Raw results: {ocr_results}")
-            
-            # Process results
+            # Step 3: Process results based on mode
             if detection_only:
                 results = self._process_detection_only_results_v3(ocr_results)
             else:
                 results = self._process_full_ocr_results_v3(ocr_results)
             
             logger.info(f"Processed {len(results)} text elements from {image_path}")
-            
             return results
             
         except Exception as e:
-            error_msg = str(e).lower()
-            if "unknown exception" in error_msg:
-                logger.warning(f"PaddleOCR encountered unknown exception for {image} - this is often related to image format/orientation issues and is recoverable")
-            else:
-                logger.error(f"OCR processing failed for {image}: {e}")
-                logger.error(traceback.format_exc())
+            logger.error(f"OCR processing failed for {image}: {e}")
+            if "out of memory" in str(e).lower():
+                logger.warning("GPU OOM detected, clearing memory")
+                self.clear_gpu_memory()
             return []
+    
+    def _preprocess_input_image(self, image: Union[str, np.ndarray]) -> Tuple[Optional[np.ndarray], str]:
+        """
+        Preprocess input image and extract image path.
+        
+        Returns:
+            Tuple of (processed_image_array, image_path)
+        """
+        # Handle input format
+        if isinstance(image, str):
+            img_array = cv2.imread(image)
+            if img_array is None:
+                logger.error(f"Could not load image: {image}")
+                return None, image
+            image_path = image
+        else:
+            img_array = image
+            image_path = "numpy_array"
+        
+        logger.info(f"Starting OCR processing for: {image_path}")
+        logger.debug(f"Image shape: {img_array.shape}")
+        
+        # Validate and preprocess image
+        processed_img = self._validate_and_preprocess_image(img_array, image_path)
+        if processed_img is None:
+            logger.error(f"Image preprocessing failed for: {image_path}")
+            return None, image_path
+        
+        return processed_img, image_path
+    
+    def _execute_paddle_ocr_with_fallback(self, processed_img: np.ndarray, image_path: str) -> Optional[List]:
+        """
+        Execute PaddleOCR with multiple fallback strategies for maximum compatibility.
+        
+        Returns:
+            OCR results or None if all strategies fail
+        """
+        ocr_results = None
+        last_error = None
+        
+        # Thread-safe OCR execution using class-level lock
+        with self._paddle_lock:
+            # Strategy 1: Try with RGB conversion (recommended approach)
+            try:
+                logger.debug("Strategy 1: Thread-safe OCR with RGB conversion")
+                img_rgb = cv2.cvtColor(processed_img, cv2.COLOR_BGR2RGB)
+                ocr_results = self.ocr_full.ocr(img_rgb)
+                logger.debug("Strategy 1 succeeded")
+                return ocr_results
+            except Exception as e1:
+                last_error = e1
+                logger.debug(f"Strategy 1 failed: {e1}")
+                
+                # Check for GPU OOM and clear memory
+                if "out of memory" in str(e1).lower():
+                    logger.warning("GPU OOM detected in strategy 1, clearing memory")
+                    self.clear_gpu_memory()
+            
+            # Strategy 2: Try with original BGR image
+            try:
+                logger.debug("Strategy 2: Thread-safe OCR with BGR image")
+                ocr_results = self.ocr_full.ocr(processed_img)
+                logger.debug("Strategy 2 succeeded")
+                return ocr_results
+            except Exception as e2:
+                last_error = e2
+                logger.debug(f"Strategy 2 failed: {e2}")
+                
+                # Check for GPU OOM and clear memory
+                if "out of memory" in str(e2).lower():
+                    logger.warning("GPU OOM detected in strategy 2, clearing memory")
+                    self.clear_gpu_memory()
+            
+            # Strategy 3: Try with further preprocessing
+            try:
+                logger.debug("Strategy 3: Thread-safe OCR with additional preprocessing")
+                further_processed = self._preprocess_problematic_image(processed_img)
+                img_rgb = cv2.cvtColor(further_processed, cv2.COLOR_BGR2RGB)
+                ocr_results = self.ocr_full.ocr(img_rgb)
+                logger.debug("Strategy 3 succeeded")
+                return ocr_results
+            except Exception as e3:
+                last_error = e3
+                logger.debug(f"Strategy 3 failed: {e3}")
+        
+        # All strategies failed
+        error_msg = str(last_error).lower()
+        if "unknown exception" in error_msg:
+            logger.warning(f"PaddleOCR encountered unknown exception for {image_path} - this is often related to image format/orientation issues and is recoverable")
+        else:
+            logger.error(f"All OCR strategies failed for {image_path}. Last error: {last_error}")
+        
+        return None
     
     def _preprocess_problematic_image(self, img_array: np.ndarray) -> np.ndarray:
         """
@@ -635,20 +931,20 @@ class PaddleTextDetector:
         return results
     
     def _is_valid_paddle_result(self, text: str, confidence: float, width: int, height: int) -> bool:
-        """Validate PaddleOCR result with more permissive criteria"""
-        # Confidence check - made more permissive
-        if confidence < 0.3:  # Lowered from 0.6 to 0.3
-            logger.debug(f"Text '{text}' rejected: confidence {confidence:.3f} below threshold")
+        """Validate PaddleOCR result using configuration-based criteria"""
+        # Confidence check using config
+        if confidence < self.config.recognition_threshold:
+            logger.debug(f"Text '{text}' rejected: confidence {confidence:.3f} below threshold {self.config.recognition_threshold}")
             return False
         
-        # Text length check - made more permissive
-        if not (1 <= len(text) <= self.config['max_text_length']):
-            logger.debug(f"Text '{text}' rejected: length {len(text)} outside range")
+        # Text length check using config
+        if not (self.config.min_text_length <= len(text) <= self.config.max_text_length):
+            logger.debug(f"Text '{text}' rejected: length {len(text)} outside range [{self.config.min_text_length}, {self.config.max_text_length}]")
             return False
         
-        # Area check - made more permissive
-        if width * height < 20:  # Lowered from 50 to 20
-            logger.debug(f"Text '{text}' rejected: area {width*height} too small")
+        # Area check using config
+        if width * height < self.config.min_bbox_area:
+            logger.debug(f"Text '{text}' rejected: area {width*height} below minimum {self.config.min_bbox_area}")
             return False
         
         # Content check - more permissive, allow any printable characters
@@ -825,20 +1121,20 @@ class PaddleTextDetector:
             
             if show_result:
                 print(f"\n{'='*60}")
-                print(f"🔍 TEXT DETECTION RESULTS for {image_path.name}")
+                print(f"TEXT DETECTION RESULTS for {image_path.name}")
                 print(f"{'='*60}")
-                print(f"📷 Image dimensions: {img.shape[1]}x{img.shape[0]} pixels")
-                print(f"🎯 Text regions found: {len(results)}")
-                print(f"📊 Overall confidence: {confidence_metrics['overall_confidence']:.1f}%")
+                print(f"Image dimensions: {img.shape[1]}x{img.shape[0]} pixels")
+                print(f"Text regions found: {len(results)}")
+                print(f"Overall confidence: {confidence_metrics['overall_confidence']:.1f}%")
                 
                 if results:
-                    print(f"\n📝 DETECTED TEXT:")
+                    print(f"\nDETECTED TEXT:")
                     for i, result in enumerate(results, 1):
                         print(f"  {i}. '{result.text}' (confidence: {result.confidence:.3f})")
                         x, y, w, h = result.bbox
                         print(f"     Location: x={x}, y={y}, width={w}, height={h}")
                 
-                print(f"\n🖼️  VISUALIZATIONS SAVED:")
+                print(f"\nVISUALIZATIONS SAVED:")
                 print(f"  • Detailed: {test_result['visualization_paths']['detailed']}")
                 print(f"  • Simple: {test_result['visualization_paths']['simple']}")
                 
@@ -1163,8 +1459,9 @@ class PaddleTextDetector:
         logger.info(f"Found {len(image_files)} image files")
         return image_files
     
+    @monitor_performance
     def process_batch(self, detection_only: bool = False, save_debug: bool = False, 
-                     max_images: int = None, start_from: int = 0) -> Dict:
+                     max_images: Optional[int] = None, start_from: int = 0) -> BatchResult:
         """
         Process all images in the input folder with progress tracking
         
@@ -1205,22 +1502,60 @@ class PaddleTextDetector:
         for i, image_path in enumerate(image_files, 1):
             image_start_time = time.time()
             
-            # Progress information
+            # Enhanced progress information with real-time feedback
             progress_pct = (i / total_images) * 100
-            logger.info(f"\n{'='*50}")
-            logger.info(f"Processing {i}/{total_images}: {image_path.name}")
-            logger.info(f"Progress: {progress_pct:.1f}%")
+            elapsed_total = time.time() - batch_start_time
             
-            # Time estimation
+            # Print to both logger and console for immediate visibility
+            progress_msg = f"\n[{i:3d}/{total_images}] ({progress_pct:5.1f}%) Processing: {image_path.name}"
+            print(progress_msg)  # Immediate console output
+            logger.info(progress_msg)
+            
+            # Real-time time estimation
             if processing_times:
                 avg_time = np.mean(processing_times)
                 remaining_images = total_images - i
-                estimated_remaining = (remaining_images * avg_time) / 60  # in minutes
-                logger.info(f"Estimated time remaining: {estimated_remaining:.1f} minutes")
+                estimated_remaining_sec = remaining_images * avg_time
+                estimated_remaining_min = estimated_remaining_sec / 60
+                
+                time_msg = f"Elapsed: {elapsed_total/60:.1f}min | ETA: {estimated_remaining_min:.1f}min | Avg: {avg_time:.1f}s/img"
+                print(time_msg)  # Immediate console output
+                logger.info(time_msg)
+            else:
+                time_msg = f"Starting batch processing..."
+                print(time_msg)
+                logger.info(time_msg)
             
             try:
                 result = self.process_single_image(image_path, save_debug, detection_only)
+                image_time = time.time() - image_start_time
+                processing_times.append(image_time)
+                
+                # Immediate result feedback
+                if result.get('processing_success', False):
+                    successful_processing += 1
+                    text_count = result.get('text_detections', 0)
+                    confidence = result.get('confidence_metrics', {}).get('overall_confidence', 0)
+                    category = result.get('organization_result', {}).get('category', 'unknown')
+                    
+                    success_msg = f"Success in {image_time:.1f}s | {text_count} texts | {confidence:.1f}% conf | → {category}"
+                    print(success_msg)  # Immediate console output
+                    logger.info(success_msg)
+                else:
+                    error_msg = result.get('error', 'Unknown error')[:60]
+                    fail_msg = f"Failed in {image_time:.1f}s: {error_msg}"
+                    print(fail_msg)  # Immediate console output
+                    logger.info(fail_msg)
+                
                 results.append(result)
+                
+                # Periodic summary for longer batches
+                if i % 10 == 0 or i == total_images:
+                    success_rate = (successful_processing / i) * 100
+                    current_avg = sum(processing_times) / len(processing_times) if processing_times else 0
+                    summary_msg = f"Progress Summary: {successful_processing}/{i} success ({success_rate:.1f}%) | Current avg: {current_avg:.1f}s/img"
+                    print(summary_msg)  # Immediate console output
+                    logger.info(summary_msg)
                 
                 if result.get('processing_success', False):
                     successful_processing += 1
@@ -1230,7 +1565,7 @@ class PaddleTextDetector:
                 processing_times.append(image_time)
                 
                 # Show current stats
-                logger.info(f"✓ Processed in {image_time:.2f}s")
+                logger.info(f"Processed in {image_time:.2f}s")
                 if result.get('confidence_metrics'):
                     confidence = result['confidence_metrics'].get('overall_confidence', 0)
                     text_count = result['confidence_metrics'].get('text_count', 0)
@@ -1330,35 +1665,117 @@ class PaddleTextDetector:
                 'max_processing_time_ms': np.max(processing_times) if processing_times else 0
             }
         }
+    
+    def process_batch_optimized(self, images: List[Path], batch_size: int = 4) -> List[ProcessingResult]:
+        """
+        Process images in optimized batches with memory management.
+        
+        Args:
+            images: List of image paths to process
+            batch_size: Number of images to process before clearing memory
+            
+        Returns:
+            List of processing results
+        """
+        results = []
+        total_batches = (len(images) + batch_size - 1) // batch_size
+        
+        logger.info(f"Processing {len(images)} images in {total_batches} batches of {batch_size}")
+        
+        for batch_idx in range(0, len(images), batch_size):
+            batch = images[batch_idx:batch_idx + batch_size]
+            batch_num = (batch_idx // batch_size) + 1
+            
+            logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} images)")
+            
+            # Preload batch images for efficiency
+            loaded_images = []
+            for img_path in batch:
+                try:
+                    img = cv2.imread(str(img_path))
+                    if img is not None:
+                        loaded_images.append((img_path, img))
+                    else:
+                        logger.warning(f"Could not load image: {img_path}")
+                except Exception as e:
+                    logger.error(f"Error loading {img_path}: {e}")
+            
+            # Process batch
+            for img_path, img in loaded_images:
+                try:
+                    result = self.process_single_image(img_path)
+                    results.append(result)
+                except Exception as e:
+                    logger.error(f"Error processing {img_path}: {e}")
+                    # Add error result
+                    results.append(self._create_error_result(img_path, str(e)))
+            
+            # Clear memory between batches
+            if self.config.use_gpu:
+                self.clear_gpu_memory()
+            
+            logger.info(f"Completed batch {batch_num}/{total_batches}")
+        
+        return results
 
 def main():
-    """Example usage of PaddleTextDetector with batch processing"""
+    """Example usage of PaddleTextDetector with new configuration system"""
     
-    print("🚀 Starting PaddleOCR Text Detection System")
+    print("Starting Enhanced PaddleOCR Text Detection System")
     print("=" * 60)
     
-    # Initialize detector
-    print("📋 Initializing PaddleOCR detector...")
-    detector = PaddleTextDetector(
-        input_folder=r"C:\Users\Public\Python\ittask\photos4testing",
+    # Create configuration
+    print("Creating cross-platform configuration...")
+    config = PaddleDetectorConfig(
         use_gpu=False,  # Set to True if you have GPU
-        use_textline_orientation=True,  # Updated parameter name
-        lang='en'
+        use_textline_orientation=True,
+        lang='en',
+        confidence_threshold=0.5,
+        recognition_threshold=0.6
     )
-    print("✅ PaddleOCR detector initialized successfully!")
+    
+    # For backward compatibility, you can also specify a custom input folder
+    photos_folder = config.base_directory / "photos4testing"
+    if photos_folder.exists():
+        config.input_folder = photos_folder
+        print(f"Using photos4testing folder: {photos_folder}")
+    else:
+        print(f"Using base directory: {config.base_directory}")
+    
+    # Optional: Save configuration for future use
+    config_path = config.base_directory / "paddle_detector_config.json"
+    config.save_to_file(config_path)
+    print(f"Configuration saved to: {config_path}")
+    
+    # Initialize detector with configuration
+    print("Initializing PaddleOCR detector...")
+    detector = PaddleTextDetector(config=config)
+    print("PaddleOCR detector initialized successfully!")
+    
+    # Validate installation
+    print("Validating PaddleOCR installation...")
+    if detector.validate_installation():
+        print("Installation validation PASSED!")
+    else:
+        print("Installation validation FAILED!")
+        return
     
     # Get total image count first
     all_images = detector.get_image_files()
     total_count = len(all_images)
-    print(f"📁 Found {total_count} images in photos4testing folder")
+    print(f"Found {total_count} images in {detector.input_folder}")
+
+    if total_count == 0:
+        print("No images found to process. Please check the input folder.")
+        return
 
     # Always process all images in the folder by default
     max_images = None
-    print(f"🔥 Processing ALL {total_count} images...")
+    print(f"Processing ALL {total_count} images...")
 
     # Process images
-    print(f"\n🏃‍♂️ Starting batch processing...")
-    print("💡 Tip: This will show progress updates every few seconds")
+    print(f"\nStarting batch processing...")
+    print("Tip: This will show progress updates every few seconds")
 
     results = detector.process_batch(
         detection_only=False,
@@ -1371,33 +1788,41 @@ def main():
         stats = results['statistics']
         perf = results.get('performance_summary', {})
         
-        print(f"\n🎉 PROCESSING COMPLETE!")
+        print(f"\nPROCESSING COMPLETE!")
         print("=" * 60)
-        print(f"📊 SUMMARY:")
+        print(f"SUMMARY:")
+        print(f"  • Platform: {platform.system()}")
         print(f"  • Total images processed: {stats['total_images']}")
         print(f"  • Success rate: {stats['success_rate']:.1f}%")
         print(f"  • Total time: {perf.get('total_time_minutes', 0):.1f} minutes")
         print(f"  • Average per image: {perf.get('images_per_minute', 0):.1f} images/minute")
         
-        print(f"\n📁 ORGANIZATION RESULTS:")
+        print(f"\nORGANIZATION RESULTS:")
         for category, count in stats['category_distribution'].items():
             print(f"  • {category.title()}: {count} images")
         
-        print(f"\n🔍 TEXT DETECTION STATS:")
+        print(f"\nTEXT DETECTION STATS:")
         print(f"  • Total text regions detected: {stats['text_count_statistics']['total']}")
         print(f"  • Average per image: {stats['text_count_statistics']['average']:.1f}")
         
-        print(f"\n📈 CONFIDENCE STATS:")
+        print(f"\nCONFIDENCE STATS:")
         print(f"  • Average confidence: {stats['confidence_statistics']['average']:.1f}%")
         print(f"  • Range: {stats['confidence_statistics']['min']:.1f}% - {stats['confidence_statistics']['max']:.1f}%")
         
-        print(f"\n📂 ORGANIZED FOLDERS:")
+        print(f"\nCROSS-PLATFORM ORGANIZED FOLDERS:")
         org_folders = results.get('organization_folders', {})
         for folder_type, path in org_folders.items():
             print(f"  • {folder_type.title()}: {path}")
+        
+        print(f"\nCONFIGURATION USED:")
+        print(f"  • Confidence threshold: {config.confidence_threshold}")
+        print(f"  • Recognition threshold: {config.recognition_threshold}")
+        print(f"  • Min bbox area: {config.min_bbox_area}")
+        print(f"  • GPU enabled: {config.use_gpu}")
+        print(f"  • Language: {config.lang}")
             
     else:
-        print("❌ Processing failed. Check the logs above for details.")
+        print("Processing failed. Check the logs above for details.")
 
 if __name__ == "__main__":
     main()

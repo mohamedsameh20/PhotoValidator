@@ -16,7 +16,19 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import time
 import warnings
-warnings.filterwarnings('ignore')
+from functools import wraps
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
+import logging
+import sys
+
+# Targeted warning suppression (instead of global 'ignore')
+warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
+warnings.filterwarnings('ignore', category=UserWarning, module='torch')
+warnings.filterwarnings('ignore', message='.*CUDA.*')
+warnings.filterwarnings('ignore', message='.*deprecated.*')
+warnings.filterwarnings('ignore', message='.*FutureWarning.*', category=FutureWarning)
+# Keep important warnings visible for debugging
 
 # Import scipy.signal for peak detection, with fallback
 try:
@@ -29,84 +41,262 @@ try:
     import pyiqa
     import torch
     PYIQA_AVAILABLE = True
-    # print("✅ PyIQA library available - using advanced quality assessment")  # Suppressed for clean output
+    # print("PyIQA library available - using advanced quality assessment")  # Suppressed for clean output
 except ImportError:
     PYIQA_AVAILABLE = False
-    # print("⚠️  PyIQA not available. Install with: pip install pyiqa torch torchvision")  # Suppressed for clean output
-    # print("🔄 Falling back to basic feature analysis")  # Suppressed for clean output
+    # print("PyIQA not available. Install with: pip install pyiqa torch torchvision")  # Suppressed for clean output
+    # print("Falling back to basic feature analysis")  # Suppressed for clean output
+
+@dataclass
+class PyIQADetectorConfig:
+    """Configuration for PyIQA detector with all configurable parameters."""
+    force_cpu: bool = False
+    gpu_id: int = 0
+    selected_models: Optional[List[str]] = None
+    excluded_models: Optional[List[str]] = field(default_factory=list)
+    manual_review_threshold: float = 25.0  # Updated: manual review from 25-30%
+    invalid_threshold: float = 30.0         # New: invalid above 30%
+    parallel_workers: int = 4  # Increased for better PyIQA batch performance
+    output_dir: str = "Results"
+    verbosity_level: str = "INFO"
+    quiet: bool = False
+    run_diagnostics: bool = False
+    folder_path: str = "photos4testing"
+    
+    @classmethod
+    def from_cli_args(cls, args: List[str]) -> 'PyIQADetectorConfig':
+        """Create config from command line arguments."""
+        config = cls()
+        
+        # Parse command line arguments
+        for i, arg in enumerate(args):
+            if arg == '--cpu':
+                config.force_cpu = True
+            elif arg.startswith('--gpu='):
+                try:
+                    config.gpu_id = int(arg.split('=')[1])
+                except ValueError:
+                    logging.warning("Invalid GPU ID, using default (0)")
+            elif arg == '--gpu' and i + 1 < len(args):
+                try:
+                    config.gpu_id = int(args[i + 1])
+                except ValueError:
+                    logging.warning("Invalid GPU ID, using default (0)")
+            elif arg.startswith('--source='):
+                config.folder_path = arg.split('=', 1)[1].strip('"')
+            elif arg == '--source' and i + 1 < len(args):
+                config.folder_path = args[i + 1].strip('"')
+            elif arg == '--fast':
+                config.selected_models = ['brisque', 'niqe', 'clipiqa']
+                config.parallel_workers = 6  # Boost parallel processing for fast mode
+            elif arg.startswith('--workers='):
+                try:
+                    config.parallel_workers = int(arg.split('=')[1])
+                except ValueError:
+                    logging.warning("Invalid worker count, using default")
+            elif arg == '--workers' and i + 1 < len(args):
+                try:
+                    config.parallel_workers = int(args[i + 1])
+                except ValueError:
+                    logging.warning("Invalid worker count, using default")
+            elif arg.startswith('--models='):
+                csv = arg.split('=', 1)[1]
+                config.selected_models = [m.strip().lower() for m in csv.split(',') if m.strip()]
+            elif arg == '--diagnostics' or arg == '--test':
+                config.run_diagnostics = True
+            elif arg == '--quiet':
+                config.quiet = True
+                config.verbosity_level = "WARNING"
+            elif arg == '--verbose':
+                config.verbosity_level = "DEBUG"
+        
+        return config
+
+class ConsoleLogger:
+    """Unified logging approach for consistent output management."""
+    
+    def __init__(self, verbosity_level: str = 'INFO', quiet: bool = False):
+        self.quiet = quiet
+        self.logger = logging.getLogger(f'PyIQADetector_{id(self)}')
+        self.setup_logging(verbosity_level)
+    
+    def setup_logging(self, level: str):
+        """Setup logging with proper formatting."""
+        if not self.logger.handlers:  # Avoid duplicate handlers
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+        self.logger.setLevel(getattr(logging, level.upper()))
+    
+    def info(self, message: str):
+        if not self.quiet:
+            self.logger.info(message)
+    
+    def debug(self, message: str):
+        if not self.quiet:
+            self.logger.debug(message)
+    
+    def warning(self, message: str):
+        self.logger.warning(message)
+    
+    def error(self, message: str):
+        self.logger.error(message)
+    
+    def print_device_info(self, device):
+        """Print detailed device and CUDA information."""
+        if self.quiet:
+            return
+            
+        self.info(f"Using device: {device}")
+        
+        if device.type == 'cuda':
+            gpu_id = device.index if device.index is not None else 0
+            gpu_name = torch.cuda.get_device_name(gpu_id)
+            gpu_memory = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
+            self.info(f"GPU: {gpu_name}")
+            self.info(f"GPU Memory: {gpu_memory:.1f} GB")
+            self.info(f"CUDA Version: {torch.version.cuda}")
+            self.info(f"PyTorch Version: {torch.__version__}")
+        else:
+            self.info("Using CPU (install CUDA-enabled PyTorch for GPU acceleration)")
+            if torch.cuda.is_available():
+                self.info("CUDA detected but not being used")
+            else:
+                self.info("CUDA not available on this system")
+
+class GPUMemoryManager:
+    """Centralized GPU memory management."""
+    
+    def __init__(self, device, clear_threshold: float = 0.8):
+        self.device = device
+        self.clear_threshold = clear_threshold
+        self.logger = logging.getLogger(f'GPUMemoryManager_{id(self)}')
+    
+    def clear_if_needed(self):
+        """Clear GPU cache if memory usage exceeds threshold."""
+        if self.device.type == 'cuda':
+            try:
+                allocated = torch.cuda.memory_allocated()
+                reserved = torch.cuda.memory_reserved()
+                if reserved > 0:  # Avoid division by zero
+                    memory_used = allocated / reserved
+                    if memory_used > self.clear_threshold:
+                        torch.cuda.empty_cache()
+                        self.logger.debug(f"GPU cache cleared (was {memory_used:.1%} full)")
+            except Exception as e:
+                self.logger.debug(f"Memory check failed: {e}")
+    
+    def force_clear(self):
+        """Force clear GPU cache."""
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+            self.logger.debug("GPU cache force cleared")
+    
+    def get_memory_usage(self) -> Dict[str, float]:
+        """Get current GPU memory usage."""
+        if self.device.type == 'cuda':
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            return {'allocated_gb': allocated, 'reserved_gb': reserved}
+        return {'allocated_gb': 0.0, 'reserved_gb': 0.0}
 
 class AdvancedEditingDetector:
     """
     Advanced editing detection using PyIQA quality assessment models combined with feature analysis.
     """
     
-    def __init__(self, force_cpu=False, gpu_id=0, quiet=False, selected_models=None, excluded_models=None):
+    def __init__(self, config: Optional[PyIQADetectorConfig] = None, force_cpu=False, gpu_id=0, quiet=False, selected_models=None, excluded_models=None):
         """
-        Initialize the detector with CUDA configuration options and model selection.
+        Initialize the detector with configuration or legacy parameters.
         
         Args:
-            force_cpu (bool): Force CPU usage even if CUDA is available
-            gpu_id (int): Specific GPU ID to use (for multi-GPU systems)
-            quiet (bool): Suppress initialization output for clean execution
-            selected_models (list): Specific models to use (if None, uses all available)
-            excluded_models (list): Models to exclude from loading
+            config (PyIQADetectorConfig): Configuration object (preferred)
+            force_cpu (bool): Force CPU usage even if CUDA is available (legacy)
+            gpu_id (int): Specific GPU ID to use (legacy)
+            quiet (bool): Suppress initialization output (legacy)
+            selected_models (list): Specific models to use (legacy)
+            excluded_models (list): Models to exclude from loading (legacy)
         """
-        self.quiet = quiet
-        self.selected_models = selected_models
-        self.excluded_models = excluded_models or []
-        self._configure_device(force_cpu, gpu_id)
-        if not self.quiet:
-            self._print_device_info()
+        # Use config if provided, otherwise use legacy parameters
+        if config is not None:
+            self.config = config
+        else:
+            # Create config from legacy parameters for backward compatibility
+            self.config = PyIQADetectorConfig(
+                force_cpu=force_cpu,
+                gpu_id=gpu_id,
+                quiet=quiet,
+                selected_models=selected_models,
+                excluded_models=excluded_models or []
+            )
+        
+        # Initialize logging system
+        self.logger = ConsoleLogger(
+            verbosity_level=self.config.verbosity_level,
+            quiet=self.config.quiet
+        )
+        
+        # Configure device
+        self._configure_device()
+        
+        # Initialize GPU memory manager
+        self.memory_manager = GPUMemoryManager(self.device)
+        
+        # Print device info
+        self.logger.print_device_info(self.device)
+        
+        # Add compatibility properties for legacy code
+        self.quiet = self.config.quiet
+        self.selected_models = self.config.selected_models
+        self.excluded_models = self.config.excluded_models
         
         if PYIQA_AVAILABLE:
             self._initialize_quality_models()
         else:
             self.quality_models = {}
     
-    def _configure_device(self, force_cpu=False, gpu_id=0):
-        """Configure the computation device with detailed CUDA information"""
-        if force_cpu:
+    def _configure_device(self):
+        """Configure the computation device using config settings."""
+        if self.config.force_cpu:
             self.device = torch.device('cpu')
-            if not self.quiet:
-                print("🖥️  Forced CPU usage")
+            self.logger.info("Forced CPU usage")
             return
         
         if torch.cuda.is_available():
             # Check if specific GPU ID is available
-            if gpu_id < torch.cuda.device_count():
-                self.device = torch.device(f'cuda:{gpu_id}')
+            if self.config.gpu_id < torch.cuda.device_count():
+                self.device = torch.device(f'cuda:{self.config.gpu_id}')
             else:
-                if not self.quiet:
-                    print(f"⚠️  GPU {gpu_id} not available, using GPU 0")
+                self.logger.warning(f"GPU {self.config.gpu_id} not available, using GPU 0")
                 self.device = torch.device('cuda:0')
         else:
             self.device = torch.device('cpu')
-            if not self.quiet:
-                print("⚠️  CUDA not available, using CPU")
+            self.logger.warning("CUDA not available, using CPU")
     
     def _print_device_info(self):
         """Print detailed device and CUDA information"""
-        print(f"🖥️  Using device: {self.device}")
+        print(f"Using device: {self.device}")
         
         if self.device.type == 'cuda':
             gpu_id = self.device.index if self.device.index is not None else 0
             gpu_name = torch.cuda.get_device_name(gpu_id)
             gpu_memory = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
-            print(f"🎮 GPU: {gpu_name}")
-            print(f"💾 GPU Memory: {gpu_memory:.1f} GB")
-            print(f"🔧 CUDA Version: {torch.version.cuda}")
-            print(f"🐍 PyTorch Version: {torch.__version__}")
+            print(f"GPU: {gpu_name}")
+            print(f"GPU Memory: {gpu_memory:.1f} GB")
+            print(f"CUDA Version: {torch.version.cuda}")
+            print(f"PyTorch Version: {torch.__version__}")
         else:
-            print("💻 Using CPU (install CUDA-enabled PyTorch for GPU acceleration)")
+            print("Using CPU (install CUDA-enabled PyTorch for GPU acceleration)")
             if torch.cuda.is_available():
-                print("💡 CUDA detected but not being used")
+                print("CUDA detected but not being used")
             else:
-                print("❌ CUDA not available on this system")
+                print("CUDA not available on this system")
     
     def _initialize_quality_models(self):
         """Initialize PyIQA quality assessment models with better isolation"""
         if not self.quiet:
-            print("🔧 Initializing quality assessment models...")
+            print("Initializing quality assessment models...")
         
         self.quality_models = {}
         
@@ -123,7 +313,7 @@ class AdvancedEditingDetector:
         models_to_load = self._determine_models_to_use(all_models)
         
         if not self.quiet:
-            print(f"📋 Loading models: {', '.join(models_to_load)}")
+            print(f"Loading models: {', '.join(models_to_load)}")
         
         # Load non-CLIP models first
         for model_name in models_to_load:
@@ -138,10 +328,10 @@ class AdvancedEditingDetector:
                 model = pyiqa.create_metric(model_name, device=self.device)
                 self.quality_models[model_name] = model
                 if not self.quiet:
-                    print(f"  ✅ Loaded {model_name.upper()}")
+                    print(f" Loaded {model_name.upper()}")
             except Exception as e:
                 if not self.quiet:
-                    print(f"  ❌ Failed to load {model_name}: {str(e)}")
+                    print(f" Failed to load {model_name}: {str(e)}")
         
         # Load CLIP-IQA separately if requested
         if 'clipiqa' in models_to_load:
@@ -150,7 +340,7 @@ class AdvancedEditingDetector:
                 try:
                     if not self.quiet:
                         attempt_text = f" (attempt {attempt + 1}/3)" if attempt > 0 else ""
-                        print(f"  🔄 Loading CLIP-IQA with isolation{attempt_text}...")
+                        print(f" Loading CLIP-IQA with isolation{attempt_text}...")
                     
                     if self.device.type == 'cuda':
                         torch.cuda.empty_cache()
@@ -180,7 +370,7 @@ class AdvancedEditingDetector:
                                 with torch.no_grad():
                                     test_score = clipiqa_model(test_path)
                                 if not self.quiet:
-                                    print(f"    🔍 CLIP-IQA test on {os.path.basename(test_path)}: {test_score}")
+                                    print(f"   CLIP-IQA test on {os.path.basename(test_path)}: {test_score}")
                                 
                                 # Check for valid score
                                 if not torch.isnan(test_score).any() and torch.isfinite(test_score).all():
@@ -189,24 +379,24 @@ class AdvancedEditingDetector:
                                         self.quality_models['clipiqa'] = clipiqa_model
                                         clipiqa_loaded = True
                                         if not self.quiet:
-                                            print(f"  ✅ CLIP-IQA loaded successfully")
+                                            print(f"  CLIP-IQA loaded successfully")
                                         break
                                     else:
                                         if not self.quiet:
-                                            print(f"    ⚠️  CLIP-IQA score out of range: {score_value}")
+                                            print(f"      CLIP-IQA score out of range: {score_value}")
                                 else:
                                     if not self.quiet:
-                                        print(f"    ⚠️  CLIP-IQA produced invalid score: {test_score}")
+                                        print(f"      CLIP-IQA produced invalid score: {test_score}")
                             except Exception as test_e:
                                 if not self.quiet:
-                                    print(f"    ⚠️  CLIP-IQA test failed on {os.path.basename(test_path)}: {str(test_e)}")
+                                    print(f"      CLIP-IQA test failed on {os.path.basename(test_path)}: {str(test_e)}")
                                 continue
                     
                     if clipiqa_loaded:
                         break
                     else:
                         if not self.quiet:
-                            print(f"    ❌ CLIP-IQA failed validation tests")
+                            print(f"     CLIP-IQA failed validation tests")
                         if attempt < 2:  # Don't clear cache on last attempt
                             if self.device.type == 'cuda':
                                 torch.cuda.empty_cache()
@@ -214,7 +404,7 @@ class AdvancedEditingDetector:
                         
                 except Exception as e:
                     if not self.quiet:
-                        print(f"    ❌ CLIP-IQA loading error: {str(e)}")
+                        print(f"     CLIP-IQA loading error: {str(e)}")
                     if attempt < 2:
                         if self.device.type == 'cuda':
                             torch.cuda.empty_cache()
@@ -225,14 +415,14 @@ class AdvancedEditingDetector:
                 if self.selected_models and 'clipiqa' in self.selected_models:
                     error_msg = "CLIP-IQA was specifically selected but failed to load properly after 3 attempts"
                     if not self.quiet:
-                        print(f"  🚨 CRITICAL: {error_msg}")
+                        print(f"   CRITICAL: {error_msg}")
                     raise RuntimeError(error_msg)
                 else:
                     if not self.quiet:
-                        print(f"  ⚠️  CLIP-IQA skipped due to loading issues")
+                        print(f"    CLIP-IQA skipped due to loading issues")
         
         if not self.quiet:
-            print(f"🎯 Successfully loaded {len(self.quality_models)} quality models")
+            print(f"Successfully loaded {len(self.quality_models)} quality models")
         
         # Validate that specifically requested models are actually loaded
         if self.selected_models:
@@ -240,12 +430,12 @@ class AdvancedEditingDetector:
             if missing_models:
                 error_msg = f"Specifically requested models failed to load: {', '.join(missing_models)}"
                 if not self.quiet:
-                    print(f"  🚨 VALIDATION ERROR: {error_msg}")
-                    print(f"  📋 Available models: {', '.join(self.quality_models.keys()) if self.quality_models else 'None'}")
+                    print(f"   VALIDATION ERROR: {error_msg}")
+                    print(f"   Available models: {', '.join(self.quality_models.keys()) if self.quality_models else 'None'}")
                 raise RuntimeError(error_msg)
             else:
                 if not self.quiet:
-                    print(f"  ✅ All requested models loaded: {', '.join(self.selected_models)}")
+                    print(f"  All requested models loaded: {', '.join(self.selected_models)}")
         
         # Print GPU memory usage after model loading
         if self.device.type == 'cuda' and not self.quiet:
@@ -267,7 +457,7 @@ class AdvancedEditingDetector:
             if not self.quiet:
                 excluded_from_selection = set(self.selected_models) - set(models_to_load)
                 if excluded_from_selection:
-                    print(f"⚠️  Unknown models in selection: {', '.join(excluded_from_selection)}")
+                    print(f"Unknown models in selection: {', '.join(excluded_from_selection)}")
         else:
             # Use all models except excluded ones
             models_to_load = [model for model in all_models if model not in self.excluded_models]
@@ -282,7 +472,7 @@ class AdvancedEditingDetector:
         if self.device.type == 'cuda':
             allocated = torch.cuda.memory_allocated() / 1024**3
             reserved = torch.cuda.memory_reserved() / 1024**3
-            print(f"📊 GPU Memory {stage}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            print(f"GPU Memory {stage}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
     
     def _clear_gpu_cache(self):
         """Clear GPU cache to free memory"""
@@ -371,7 +561,7 @@ class AdvancedEditingDetector:
                         if isinstance(score, (int, float)):
                             if score < 0.1 or score > 0.9:
                                 if not self.quiet:
-                                    print(f"    ⚠️  {model_name} returned suspicious value: {score:.3f}")
+                                    print(f"    {model_name} returned suspicious value: {score:.3f}")
                                 quality_scores[f'{model_name}_warning'] = f"Suspicious score: {score:.3f}"
                                 # Still record the score but flag it
                                 quality_scores[f'{model_name}_score'] = float(score)
@@ -389,7 +579,7 @@ class AdvancedEditingDetector:
                     
                 except Exception as e:
                     quality_scores[f'{model_name}_error'] = str(e)
-                    print(f"    ⚠️  Error with {model_name}: {str(e)}")
+                    print(f"    Error with {model_name}: {str(e)}")
             
             return quality_scores
             
@@ -549,19 +739,19 @@ class AdvancedEditingDetector:
                 score = score.item()
             except:
                 if not self.quiet:
-                    print(f"    ⚠️  Invalid {metric_name} score: tensor conversion failed")
+                    print(f"    Invalid {metric_name} score: tensor conversion failed")
                 return None
         
         # Additional validation for numeric types and NaN/inf
         if not isinstance(score, (int, float)) or np.isnan(score) or np.isinf(score):
             if not self.quiet:
-                print(f"    ⚠️  Invalid {metric_name} score: {score}")
+                print(f"    Invalid {metric_name} score: {score}")
             return None
         
         # CLIP-IQA specific validation (should be between 0 and 1)
         if metric_name == 'CLIP-IQA' and (score < 0 or score > 1):
             if not self.quiet:
-                print(f"    ⚠️  {metric_name} score {score:.3f} outside valid range [0,1]")
+                print(f"    {metric_name} score {score:.3f} outside valid range [0,1]")
             return None
         
         return float(score)
@@ -672,7 +862,7 @@ class AdvancedEditingDetector:
                 else:
                     scores['clipiqa_editing_indicator'] = None
                     if not self.quiet:
-                        print(f"    ⚠️  CLIP-IQA score {clipiqa:.3f} outside valid range")
+                        print(f"    CLIP-IQA score {clipiqa:.3f} outside valid range")
             else:
                 scores['clipiqa_editing_indicator'] = None
         
@@ -936,16 +1126,19 @@ class AdvancedEditingDetector:
             return None, f"Error analyzing image: {str(e)}"
     
     def organize_images_by_editing_score(self, results, folder_path, base_output_dir="Results", 
-                                       manual_review_threshold=33.0):
+                                       manual_review_threshold=25.0, invalid_threshold=30.0):
         """
         Organize images into folders based on editing detection scores.
-        Images above 33% confidence are moved to manual review as "artificial editing detected".
+        - Valid: 0-25% confidence (clean images)
+        - Manual Review: 25-30% confidence (needs human verification)  
+        - Invalid: >30% confidence (too heavily edited)
         
         Args:
             results: List of analysis results
             folder_path: Source folder containing the images
             base_output_dir: Base directory for organized images
-            manual_review_threshold: Threshold for manual review (default: 33.0)
+            manual_review_threshold: Threshold for manual review (default: 25.0)
+            invalid_threshold: Threshold for invalid classification (default: 30.0)
             
         Returns:
             Dictionary with organization statistics
@@ -955,14 +1148,15 @@ class AdvancedEditingDetector:
         # Create output directories 
         valid_dir = os.path.join(base_output_dir, "valid")
         manualreview_dir = os.path.join(base_output_dir, "manualreview")
+        invalid_dir = os.path.join(base_output_dir, "invalid")
         
-        for directory in [valid_dir, manualreview_dir]:
+        for directory in [valid_dir, manualreview_dir, invalid_dir]:
             os.makedirs(directory, exist_ok=True)
         
         organization_stats = {
-            'valid': [],
-            'invalid': [],  # Won't be used for editing-only
-            'manualreview': [],  # Images with artificial editing detected
+            'valid': [],           # 0-25% confidence
+            'manualreview': [],    # 25-30% confidence  
+            'invalid': [],         # >30% confidence
             'errors': []
         }
         
@@ -979,17 +1173,20 @@ class AdvancedEditingDetector:
             try:
                 score = result['comprehensive_assessment']['overall_editing_score']
                 
-                # NEW: Move images above 33% confidence to manual review
-                if score >= manual_review_threshold:
+                # NEW: Three-tier classification system
+                if score > invalid_threshold:
+                    dest_path = os.path.join(invalid_dir, filename)
+                    organization_stats['invalid'].append(filename)
+                    result['classification_reason'] = f"Invalid - heavily edited ({score:.1f}% > {invalid_threshold}%)"
+                elif score >= manual_review_threshold:
                     dest_path = os.path.join(manualreview_dir, filename)
                     organization_stats['manualreview'].append(filename)
-                    
-                    # Add reason to result for reporting
-                    result['manual_review_reason'] = "Artificial editing detected"
+                    result['classification_reason'] = f"Manual review needed ({score:.1f}% in {manual_review_threshold}-{invalid_threshold}% range)"
                 else:
-                    # Copy lower confidence images to valid folder
+                    # Clean images below manual review threshold
                     dest_path = os.path.join(valid_dir, filename)
                     organization_stats['valid'].append(filename)
+                    result['classification_reason'] = f"Valid - clean image ({score:.1f}% < {manual_review_threshold}%)"
                 
                 # Copy the file to appropriate destination
                 if os.path.abspath(source_path) != os.path.abspath(dest_path):
@@ -1081,7 +1278,7 @@ class AdvancedEditingDetector:
         Run diagnostic tests to validate the improved scoring system.
         """
         if not self.quiet:
-            print("\n🔧 RUNNING SCORING DIAGNOSTICS")
+            print("\nRUNNING SCORING DIAGNOSTICS")
             print("=" * 60)
         
         # Test with a few sample images if available
@@ -1094,7 +1291,7 @@ class AdvancedEditingDetector:
             if image_files:
                 test_file = image_files[0]  # Use first available image
                 if not self.quiet:
-                    print(f"📊 Testing with: {os.path.basename(test_file)}")
+                    print(f"Testing with: {os.path.basename(test_file)}")
                 
                 result, status = self.analyze_single_image(test_file)
                 
@@ -1102,7 +1299,7 @@ class AdvancedEditingDetector:
                     scores = result['comprehensive_assessment']
                     
                     if not self.quiet:
-                        print(f"\n📈 SCORING BREAKDOWN:")
+                        print(f"\nSCORING BREAKDOWN:")
                         print(f"  PyIQA Models Used: {scores.get('pyiqa_model_count', 0)}")
                         
                         if scores.get('brisque_editing_indicator') is not None:
@@ -1119,21 +1316,20 @@ class AdvancedEditingDetector:
                         print(f"  Category: {scores['editing_category']}")
                         print(f"  Confidence: {scores['confidence']}")
                         
-                        print(f"\n✅ Diagnostics completed successfully")
+                        print(f"\nDiagnostics completed successfully")
                 else:
                     if not self.quiet:
-                        print(f"❌ Diagnostic test failed: {status}")
+                        print(f"Diagnostic test failed: {status}")
             else:
                 if not self.quiet:
-                    print(f"⚠️  No test images found in {test_images_dir}")
+                    print(f"No test images found in {test_images_dir}")
         else:
             if not self.quiet:
-                print(f"⚠️  Test directory {test_images_dir} not found")
+                print(f"Test directory {test_images_dir} not found")
 
 def process_image_wrapper(args):
     """Wrapper for parallel processing"""
     filename, file_path, detector = args
-    print(f"🔍 Analyzing: {filename}")
     
     result, status = detector.analyze_single_image(file_path)
     
@@ -1179,20 +1375,20 @@ def print_main_style_editing_summary(results: list) -> None:
     successful_sorted = sorted(successful, key=lambda x: x['comprehensive_assessment']['overall_editing_score'], reverse=True)
 
     manual_review_needed = 0
-    editing_review_flagged = 0
+    invalid_images = 0
     
     for result in successful_sorted:
         filename = result['filename']
         score = result['comprehensive_assessment']['overall_editing_score']
         
-        # Updated assessment logic with new 33% manual review threshold
-        if score >= 33.0:
-            assessment = "Artificial editing detected"
+        # Updated assessment logic with new three-tier thresholds
+        if score > 30.0:
+            assessment = "Invalid - heavily edited"
+            invalid_images += 1
+        elif score >= 25.0:
+            assessment = "Manual review needed"
             manual_review_needed += 1
-        elif score >= 27.0:
-            assessment = "Probably artificially edited"
-            editing_review_flagged += 1
-        elif score >= 24.0:
+        elif score >= 18.0:
             assessment = "Possible light editing"
         else:
             assessment = "Minimal/natural editing"
@@ -1201,30 +1397,33 @@ def print_main_style_editing_summary(results: list) -> None:
         print(f"{filename_short:<50} {score:>8.1f}%{'':<11} {assessment:<30}")
     
     print("-" * 120)
-    print("Note: Images with confidence ≥33% are moved to manual review for artificial editing.")
-    print("      Images with confidence ≥27% are flagged for editing review but kept in place.")    # Categorize based on editing scores with new thresholds
-    minimal_edited = [r for r in successful if r['comprehensive_assessment']['overall_editing_score'] < 18.0]
-    valid_images = total - manual_review_needed
+    print("Note: Images 25-30% confidence → manual review, >30% confidence → invalid")
+    
+    # Calculate statistics with new thresholds
+    valid_images = total - manual_review_needed - invalid_images
     
     print(f"\nSUMMARY:")
     print(f"  Total Images Processed: {total}")
     print(f"  Valid Images: {valid_images}")
-    print(f"  Invalid Images: 0")      # No images moved to invalid
-    print(f"  Manual Review Needed (moved): {manual_review_needed}")
-    if editing_review_flagged > 0:
-        print(f"  Editing Review Flagged (kept in place): {editing_review_flagged}")
+    print(f"  Invalid Images: {invalid_images}")
+    print(f"  Manual Review Needed: {manual_review_needed}")
     print(f"  Success Rate: 100.0%")   # Always 100% since all images are processed
     
     # Display results with updated organization
     if valid_images > 0:
         print(f"\nVALID IMAGES ({valid_images} images):")
         print("-" * 120)
-        print(f"Validation checks passed - images copied to 'Results\\valid' folder")
+        print(f"Clean images - copied to 'Results\\valid' folder")
     
     if manual_review_needed > 0:
         print(f"\nMANUAL REVIEW NEEDED ({manual_review_needed} images):")
         print("-" * 120)
-        print(f"Artificial editing detected - images moved to 'Results\\manualreview' folder")
+        print(f"25-30% confidence - images moved to 'Results\\manualreview' folder")
+    
+    if invalid_images > 0:
+        print(f"\nINVALID IMAGES ({invalid_images} images):")
+        print("-" * 120)
+        print(f"Heavily edited (>30%) - images moved to 'Results\\invalid' folder")
     
     print(f"\nOUTPUT STRUCTURE:")
     print(f"  Valid images: Results\\valid")
@@ -1232,241 +1431,193 @@ def print_main_style_editing_summary(results: list) -> None:
     print(f"  Manual review needed: Results\\manualreview")
     print(f"  Processing logs: Results\\logs")
     
-    print(f"\nNOTE: Images flagged only for editing review are kept in their original location.")
-    print(f"      Images with artificial editing detected (≥33%) are moved to manual review.")
+    print(f"\nNOTE: Three-tier classification system:")
+    print(f"      • 0-25%: Valid (clean images)")
+    print(f"      • 25-30%: Manual review needed")  
+    print(f"      • >30%: Invalid (too heavily edited)")
     print(f"      Check the 'EDITING CONFIDENCE ANALYSIS' table above to see which images need editing review.")
     
     print("\n" + "=" * 120)
 
-def main():
-    """Main execution function with CUDA configuration options and improved scoring"""
-    folder_path = "photos4testing"  # Standard input folder
-    
-    print("🔬 ADVANCED IMAGE EDITING DETECTOR v2.0")
-    print("=" * 70)
-    
-    # CUDA Configuration Options
-    import argparse
-    import sys
-    
-    # Simple command-line argument parsing
-    force_cpu = '--cpu' in sys.argv
-    run_diagnostics = '--diagnostics' in sys.argv or '--test' in sys.argv
-    gpu_id = 0
-    # CLI-driven model selection (non-interactive)
-    selected_models = None
-    excluded_models = None
-    skip_model_prompt = False
-    
-    # Check for GPU ID argument and optional flags
-    for i, arg in enumerate(sys.argv):
-        if arg.startswith('--gpu='):
-            try:
-                gpu_id = int(arg.split('=')[1])
-            except ValueError:
-                print("⚠️  Invalid GPU ID, using default (0)")
-        elif arg == '--gpu' and i + 1 < len(sys.argv):
-            try:
-                gpu_id = int(sys.argv[i + 1])
-            except ValueError:
-                print("⚠️  Invalid GPU ID, using default (0)")
-        elif arg.startswith('--source='):
-            folder_path = arg.split('=', 1)[1].strip('"')
-        elif arg == '--source' and i + 1 < len(sys.argv):
-            folder_path = sys.argv[i + 1].strip('"')
-        elif arg == '--fast':
-            selected_models = ['brisque', 'niqe', 'clipiqa']
-            skip_model_prompt = True
-        elif arg.startswith('--models='):
-            csv = arg.split('=', 1)[1]
-            selected_models = [m.strip().lower() for m in csv.split(',') if m.strip()]
-            skip_model_prompt = True
-    
-    # Model selection logic
-    
-    if PYIQA_AVAILABLE:
-        print("🎯 PyIQA Quality Assessment Models Available")
-        print("📊 Available Models:")
-        all_available_models = ['brisque', 'niqe', 'musiq', 'dbcnn', 'hyperiqa', 'clipiqa']
-        for i, model in enumerate(all_available_models, 1):
-            marker = " ⚡ FAST" if i in [1, 2, 6] else ""
-            print(f"  {i}. {model.upper()}{marker}")
-        
-        if not skip_model_prompt:
-            print("\n🔧 Model Selection Options:")
-            print("  1. Use RECOMMENDED FAST models (BRISQUE + NIQE + CLIPIQA) ⚡")
-            print("  2. Use ALL models (slower but comprehensive)")
-            print("  3. Select SPECIFIC models to use")
-            print("  4. EXCLUDE specific models")
-            
-            try:
-                choice = input("\nEnter your choice (1-4) [1]: ").strip()
-                if not choice:
-                    choice = "1"
-                
-                if choice == "1":
-                    # Use recommended fast models: BRISQUE, NIQE, CLIPIQA
-                    selected_models = ['brisque', 'niqe', 'clipiqa']
-                    print(f"⚡ Using FAST recommended models: {', '.join(selected_models)}")
-                    
-                elif choice == "2":
-                    # Use all models (original default behavior)
-                    selected_models = None
-                    print("📊 Using ALL models for comprehensive analysis")
-                    
-                elif choice == "3":
-                    print("\n📋 Select models to use (enter numbers separated by spaces):")
-                    print("Available: " + ", ".join(f"{i}:{model}" for i, model in enumerate(all_available_models, 1)))
-                    print("💡 Tip: Use 1,2,6 for fastest recommended combination")
-                    model_input = input("Model numbers: ").strip()
-                    if model_input:
-                        try:
-                            indices = [int(x.strip()) - 1 for x in model_input.split(',') if x.strip()]
-                            selected_models = [all_available_models[i] for i in indices if 0 <= i < len(all_available_models)]
-                            print(f"✅ Selected models: {', '.join(selected_models)}")
-                        except (ValueError, IndexError):
-                            print("⚠️  Invalid input, using fast recommended models")
-                            selected_models = ['brisque', 'niqe', 'clipiqa']
-                            
-                elif choice == "4":
-                    print("\n🚫 Select models to EXCLUDE (enter numbers separated by spaces):")
-                    print("Available: " + ", ".join(f"{i}:{model}" for i, model in enumerate(all_available_models, 1)))
-                    model_input = input("Model numbers to exclude: ").strip()
-                    if model_input:
-                        try:
-                            indices = [int(x.strip()) - 1 for x in model_input.split(',') if x.strip()]
-                            excluded_models = [all_available_models[i] for i in indices if 0 <= i < len(all_available_models)]
-                            print(f"🚫 Excluded models: {', '.join(excluded_models)}")
-                        except (ValueError, IndexError):
-                            print("⚠️  Invalid input, using fast recommended models")
-                            selected_models = ['brisque', 'niqe', 'clipiqa']
-                else:
-                    print("⚠️  Invalid choice, using fast recommended models")
-                    selected_models = ['brisque', 'niqe', 'clipiqa']
-                    
-            except KeyboardInterrupt:
-                print("\n🔄 Using fast recommended models (BRISQUE + NIQE + CLIPIQA)")
-                selected_models = ['brisque', 'niqe', 'clipiqa']
-        
-        if selected_models:
-            if set(selected_models) == {'brisque', 'niqe', 'clipiqa'}:
-                print(f"⚡ Using FAST recommended models: {', '.join(selected_models)}")
-            else:
-                print(f"🎯 Using SELECTED PyIQA Models: {', '.join(selected_models)}")
-        elif excluded_models:
-            remaining_models = [m for m in all_available_models if m not in excluded_models]
-            print(f"🎯 Using PyIQA Models (excluding {', '.join(excluded_models)}): {', '.join(remaining_models)}")
-        else:
-            print("🎯 Using ALL PyIQA Models: BRISQUE • NIQE • CLIP-IQA • MUSIQ • DBCNN • HyperIQA")
-    else:
-        print("🎯 Using Feature-Based Analysis Only with Empirical Thresholds")
-        print("💡 Install PyIQA for enhanced detection: pip install pyiqa torch")
-    
-    print("🔍 Features: Histogram • Edges • Frequency Domain")
-    print(f"📁 Target folder: {folder_path}")
-    print("🆕 Improved: Empirical thresholds, robust validation, better normalization")
-    
-    # Display CUDA options
-    if PYIQA_AVAILABLE and torch.cuda.is_available():
-        print(f"🎮 CUDA Options:")
-        print(f"  • Available GPUs: {torch.cuda.device_count()}")
-        for i in range(torch.cuda.device_count()):
-            print(f"    - GPU {i}: {torch.cuda.get_device_name(i)}")
-        print(f"  • Use --cpu to force CPU mode")
-        print(f"  • Use --gpu=N to select specific GPU")
-        print(f"  • Use --diagnostics to run scoring validation tests")
-    
-    print("⚡ Parallel processing enabled\n")
-    
-    # Initialize detector with CUDA configuration and model selection
-    detector = AdvancedEditingDetector(
-        force_cpu=force_cpu, 
-        gpu_id=gpu_id, 
-        selected_models=selected_models,
-        excluded_models=excluded_models
-    )
+def parse_cli_arguments() -> PyIQADetectorConfig:
+    """Parse command line arguments and return configuration."""
+    return PyIQADetectorConfig.from_cli_args(sys.argv[1:])
+
+def initialize_detector(config: PyIQADetectorConfig) -> AdvancedEditingDetector:
+    """Initialize detector with given configuration."""
+    detector = AdvancedEditingDetector(config=config)
     
     # Run diagnostics if requested
-    if run_diagnostics:
-        detector.run_scoring_diagnostics(folder_path)
-        print("\n" + "=" * 70)
+    if config.run_diagnostics:
+        detector.run_scoring_diagnostics(config.folder_path)
+        detector.logger.info("=" * 70)
     
-    # Get image files
+    return detector
+
+def get_image_files(folder_path: str) -> List[tuple]:
+    """Get list of image files to process."""
     image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif')
     image_files = []
     
     if not os.path.exists(folder_path):
-        print(f"❌ Error: Folder {folder_path} not found")
-        return
+        raise FileNotFoundError(f"Folder {folder_path} not found")
     
     for filename in os.listdir(folder_path):
         if filename.lower().endswith(image_extensions):
             file_path = os.path.join(folder_path, filename)
-            image_files.append((filename, file_path, detector))
+            # Create detector placeholder for process_image_wrapper compatibility
+            image_files.append((filename, file_path, None))
     
-    if not image_files:
-        print("❌ No image files found")
-        return
+    return image_files
+
+def process_images(detector: AdvancedEditingDetector, image_files: List[tuple]) -> List[Dict[str, Any]]:
+    """Process all images using the detector."""
+    # Update image_files tuples to include the actual detector
+    image_files_with_detector = [(filename, file_path, detector) for filename, file_path, _ in image_files]
     
-    print(f"📸 Found {len(image_files)} images to analyze")
+    detector.logger.info(f"Found {len(image_files)} images to analyze")
+    detector.logger.info(f"Starting parallel analysis with {detector.config.parallel_workers} workers...")
     
-    # Process images
     start_time = time.time()
-    print("🚀 Starting analysis...")
     
-    with ThreadPoolExecutor(max_workers=2) as executor:  # Reduced workers for PyIQA
-        results = list(executor.map(process_image_wrapper, image_files))
+    with ThreadPoolExecutor(max_workers=detector.config.parallel_workers) as executor:
+        # Submit all tasks
+        futures = [executor.submit(process_image_wrapper, args) for args in image_files_with_detector]
+        
+        # Process completed tasks and show progress
+        completed = 0
+        results = []
+        for future in futures:
+            result = future.result()
+            results.append(result)
+            completed += 1
+            
+            # Show progress every 10% or significant milestones
+            if completed % max(1, len(image_files) // 10) == 0 or completed == len(image_files):
+                progress = (completed / len(image_files)) * 100
+                print(f"✓ Progress: {completed}/{len(image_files)} images processed ({progress:.1f}%)")
     
     processing_time = time.time() - start_time
     
-    # Compile results
-    successful = [r for r in results if r['status'] == 'success']
-    failed = [r for r in results if r['status'] == 'failed']
+    detector.logger.info(f"ANALYSIS COMPLETED!")
+    detector.logger.info(f"Processing time: {processing_time:.2f} seconds")
+    detector.logger.info(f"Speed: {len(image_files) / processing_time:.1f} images/second")
     
+    return results, processing_time
+
+def save_results(results: List[Dict[str, Any]], config: PyIQADetectorConfig, processing_time: float):
+    """Save results to JSON file."""
     # Save results to unified Results/logs folder
-    os.makedirs("Results/logs", exist_ok=True)
+    os.makedirs(f"{config.output_dir}/logs", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = f"Results/logs/advanced_editing_analysis_{timestamp}.json"
+    output_file = f"{config.output_dir}/logs/advanced_editing_analysis_{timestamp}.json"
     
     analysis_summary = {
         'analysis_timestamp': datetime.now().isoformat(),
-        'folder_path': folder_path,
+        'folder_path': config.folder_path,
         'analysis_method': 'PyIQA + Feature-Based Detection' if PYIQA_AVAILABLE else 'Feature-Based Detection',
-        'total_images': len(image_files),
-        'successful_analyses': len(successful),
-        'failed_analyses': len(failed),
+        'total_images': len(results),
+        'successful_analyses': len([r for r in results if r.get('comprehensive_assessment')]),
+        'failed_analyses': len([r for r in results if not r.get('comprehensive_assessment')]),
         'processing_time_seconds': round(processing_time, 2),
-        'images_per_second': round(len(image_files) / processing_time, 2),
+        'images_per_second': round(len(results) / processing_time, 2),
         'pyiqa_available': PYIQA_AVAILABLE,
+        'config_used': {
+            'force_cpu': config.force_cpu,
+            'gpu_id': config.gpu_id,
+            'selected_models': config.selected_models,
+            'excluded_models': config.excluded_models,
+            'manual_review_threshold': config.manual_review_threshold,
+            'invalid_threshold': config.invalid_threshold
+        },
         'images': {r['filename']: r for r in results}
     }
     
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(analysis_summary, f, indent=2, ensure_ascii=False)
     
-    # Display results
-    print(f"\n✅ ANALYSIS COMPLETED!")
-    print(f"⏱️  Processing time: {processing_time:.2f} seconds")
-    print(f"🔄 Speed: {len(image_files) / processing_time:.1f} images/second")
-    print(f"📄 Results saved to: {output_file}")
+    return output_file
+
+def display_results(results: List[Dict[str, Any]], detector: AdvancedEditingDetector, output_file: str):
+    """Display analysis results and organize images."""
+    detector.logger.info(f" Results saved to: {output_file}")
     
+    successful = [r for r in results if r.get('comprehensive_assessment')]
     if successful:
         # Use main pipeline style summary
         print_main_style_editing_summary(results)
         
         # Organize images by editing scores
-        print(f"\n📁 Organizing images by editing scores...")
+        detector.logger.info(f" Organizing images by editing scores...")
         organization_stats = detector.organize_images_by_editing_score(
             results,
-            folder_path,
-            base_output_dir="Results",
-            manual_review_threshold=33.0
+            detector.config.folder_path,
+            base_output_dir=detector.config.output_dir,
+            manual_review_threshold=detector.config.manual_review_threshold,
+            invalid_threshold=detector.config.invalid_threshold
         )
     
     # Show any failed analyses briefly
     failed = [r for r in results if not r.get('comprehensive_assessment')]
     if failed:
-        print(f"\n❌ Note: {len(failed)} images failed analysis due to errors.")
+        detector.logger.warning(f"Note: {len(failed)} images failed analysis due to errors.")
+
+def main():
+    """Main execution function - refactored for better maintainability."""
+    try:
+        # Parse configuration
+        config = parse_cli_arguments()
+        
+        # Display header
+        print("ADVANCED IMAGE EDITING DETECTOR v2.0")
+        print("=" * 70)
+        
+        # Display configuration info
+        if PYIQA_AVAILABLE:
+            print("PyIQA Quality Assessment Models Available")
+            if config.selected_models:
+                if set(config.selected_models) == {'brisque', 'niqe', 'clipiqa'}:
+                    print(f"Using FAST recommended models: {', '.join(config.selected_models)}")
+                else:
+                    print(f"Using SELECTED PyIQA Models: {', '.join(config.selected_models)}")
+            elif config.excluded_models:
+                all_models = ['brisque', 'niqe', 'musiq', 'dbcnn', 'hyperiqa', 'clipiqa']
+                remaining_models = [m for m in all_models if m not in config.excluded_models]
+                print(f"Using PyIQA Models (excluding {', '.join(config.excluded_models)}): {', '.join(remaining_models)}")
+            else:
+                print("Using ALL PyIQA Models: BRISQUE • NIQE • CLIP-IQA • MUSIQ • DBCNN • HyperIQA")
+        else:
+            print("Using Feature-Based Analysis Only with Empirical Thresholds")
+            print("Install PyIQA for enhanced detection: pip install pyiqa torch")
+        
+        print("Features: Histogram • Edges • Frequency Domain")
+        print(f"Target folder: {config.folder_path}")
+        print("Improved: Empirical thresholds, robust validation, better normalization")
+        print(f"Parallel processing enabled with {config.parallel_workers} workers\n")
+        
+        # Initialize detector
+        detector = initialize_detector(config)
+        
+        # Get image files
+        image_files = get_image_files(config.folder_path)
+        
+        # Process images
+        results, processing_time = process_images(detector, image_files)
+        
+        # Save results
+        output_file = save_results(results, config, processing_time)
+        
+        # Display results
+        display_results(results, detector, output_file)
+        
+    except KeyboardInterrupt:
+        print("\nAnalysis interrupted by user")
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        logging.exception("Full error details:")
 
 if __name__ == "__main__":
+    # Use only the optimized class-based approach with proper parallel processing
     main()

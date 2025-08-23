@@ -18,14 +18,27 @@ color %COLOR_MAIN%
 REM ===== PYTHON CONFIGURATION =====
 set "PYTHON_PATH=C:/Users/Public/Python/MyPy/Scripts/python.exe"
 
+REM ===== GPU CONFIGURATION =====
+set "USE_GPU=True"
+set "GPU_ID=0"
+set "GPU_FLAGS="
+
 REM ===== DEFAULT PATHS =====
 set "DEFAULT_INPUT=photos4testing"
 set "DEFAULT_OUTPUT=Results"
 set "INPUT_DIR=%DEFAULT_INPUT%"
 set "OUTPUT_DIR=%DEFAULT_OUTPUT%"
 
+REM ═══════════════════════════════════════════════════════════════════════════
+REM INTERACTIVE MODE
+REM ═══════════════════════════════════════════════════════════════════════════
+
 :MAIN_MENU
 cls
+
+REM Perform system validation before showing menu
+call :VALIDATE_SYSTEM_QUICK
+
 echo.
 echo ╔══════════════════════════════════════════════════════════════════════════╗
 echo ║                                                                          ║
@@ -50,6 +63,16 @@ echo └────────────────────────
 echo   Input:  %INPUT_DIR%
 echo   Output: %OUTPUT_DIR%
 echo   Python: %PYTHON_PATH%
+echo   GPU:    %USE_GPU% (ID: %GPU_ID%)
+if defined SYSTEM_STATUS (
+    if defined SYSTEM_ISSUES (
+        echo   Status: %SYSTEM_STATUS% Issues: %SYSTEM_ISSUES%
+    ) else (
+        echo   Status: %SYSTEM_STATUS% All systems operational
+    )
+) else (
+    echo   Status: Checking...
+)
 echo.
 echo ┌──────────────────────────────────────────────────────────────┐
 echo │                     CORE VALIDATION TESTS                    │
@@ -70,7 +93,10 @@ echo   [7] Custom Test Combination
 echo   [8] System Information              
 echo   [9] View Analysis Reports            
 echo   [A] Advanced PyIQA Editing Detection  
+echo   [V] Full System Validation           
 echo   [P] Configure Paths ^& Settings      
+echo   [M] Model Cache Management           
+echo   [G] GPU Configuration                
 echo.
 echo ═══════════════════════════════════════════════════════════════
 echo   Press Ctrl+C to exit anytime
@@ -87,8 +113,26 @@ if "%choice%"=="7" goto CUSTOM_COMBINATION
 if "%choice%"=="8" goto SYSTEM_INFO
 if "%choice%"=="9" goto VIEW_REPORTS
 if /i "%choice%"=="A" goto RUN_ADVANCED_PYIQA
+if /i "%choice%"=="V" goto FULL_SYSTEM_VALIDATION
 if /i "%choice%"=="P" goto CONFIGURE_PATHS
+if /i "%choice%"=="M" goto MODEL_CACHE_MANAGEMENT
+if /i "%choice%"=="G" goto GPU_CONFIGURATION
 goto INVALID_CHOICE
+
+:FULL_SYSTEM_VALIDATION
+color %COLOR_INFO%
+cls
+call :VALIDATE_SYSTEM_FULL
+echo.
+echo [B] Back to Main Menu
+echo.
+set /p validation_choice="Press B to return to main menu or any other key to continue: "
+if /i "%validation_choice%"=="B" (
+    color %COLOR_MAIN%
+    goto MAIN_MENU
+)
+color %COLOR_MAIN%
+goto MAIN_MENU
 
 :CONFIGURE_PATHS
 color %COLOR_CONFIG%
@@ -138,9 +182,50 @@ echo [Press Enter to keep current: %INPUT_DIR%]
 echo.
 set /p new_input="Input folder: "
 if not "%new_input%"=="" (
-    set "INPUT_DIR=%new_input%"
-    echo.
-    echo Input folder updated to: %INPUT_DIR%
+    REM Remove quotes if present and validate
+    set "cleaned_path=%new_input:"=%"
+    
+    REM Check for invalid characters
+    echo "!cleaned_path!" | findstr /r "[<>:\"|?*]" >nul
+    if not errorlevel 1 (
+        color %COLOR_ERROR%
+        echo.
+        echo ❌ Error: Path contains invalid characters ^(<^> : " ^| ? *^)
+        echo Please enter a valid directory path.
+        echo.
+        pause
+        color %COLOR_CONFIG%
+        goto CHANGE_INPUT
+    )
+    
+    REM Check if directory exists
+    if exist "!cleaned_path!" (
+        set "INPUT_DIR=!cleaned_path!"
+        echo.
+        echo ✅ Valid directory: !cleaned_path!
+        
+        REM Count image files
+        for /f %%i in ('dir /b "!cleaned_path!\*.jpg" "!cleaned_path!\*.png" "!cleaned_path!\*.jpeg" "!cleaned_path!\*.bmp" "!cleaned_path!\*.tiff" 2^>nul ^| find /c /v ""') do (
+            if %%i GTR 0 (
+                echo ✅ Found %%i image files
+            ) else (
+                echo ⚠️  Warning: No common image files found ^(jpg, png, jpeg, bmp, tiff^)
+            )
+        )
+    ) else (
+        color %COLOR_ERROR%
+        echo.
+        echo ❌ Error: Directory does not exist: !cleaned_path!
+        echo Please enter a valid directory path.
+        echo.
+        choice /c YN /m "Try again? (Y/N)"
+        if errorlevel 2 (
+            color %COLOR_CONFIG%
+            goto CONFIGURE_PATHS
+        )
+        color %COLOR_CONFIG%
+        goto CHANGE_INPUT
+    )
 ) else (
     echo.
     echo Keeping current input folder: %INPUT_DIR%
@@ -161,9 +246,47 @@ echo [Press Enter to keep current: %OUTPUT_DIR%]
 echo.
 set /p new_output="Output folder: "
 if not "%new_output%"=="" (
-    set "OUTPUT_DIR=%new_output%"
-    echo.
-    echo Output folder updated to: %OUTPUT_DIR%
+    REM Remove quotes if present and validate
+    set "cleaned_path=%new_output:"=%"
+    
+    REM Check for invalid characters
+    echo "!cleaned_path!" | findstr /r "[<>:\"|?*]" >nul
+    if not errorlevel 1 (
+        color %COLOR_ERROR%
+        echo.
+        echo ❌ Error: Path contains invalid characters ^(<^> : " ^| ? *^)
+        echo Please enter a valid directory path.
+        echo.
+        pause
+        color %COLOR_CONFIG%
+        goto CHANGE_OUTPUT
+    )
+    
+    REM Check if parent directory exists (for creation validation)
+    for %%p in ("!cleaned_path!") do set "parent_dir=%%~dpp"
+    if exist "!parent_dir!" (
+        set "OUTPUT_DIR=!cleaned_path!"
+        echo.
+        echo ✅ Valid output path: !cleaned_path!
+        if not exist "!cleaned_path!" (
+            echo ℹ️  Directory will be created when needed
+        ) else (
+            echo ✅ Directory already exists
+        )
+    ) else (
+        color %COLOR_ERROR%
+        echo.
+        echo ❌ Error: Parent directory does not exist: !parent_dir!
+        echo Cannot create output directory at this location.
+        echo.
+        choice /c YN /m "Try again? (Y/N)"
+        if errorlevel 2 (
+            color %COLOR_CONFIG%
+            goto CONFIGURE_PATHS
+        )
+        color %COLOR_CONFIG%
+        goto CHANGE_OUTPUT
+    )
 ) else (
     echo.
     echo Keeping current output folder: %OUTPUT_DIR%
@@ -328,6 +451,10 @@ goto CONFIGURE_PATHS
 :RUN_COMPLETE
 color %COLOR_ANALYSIS%
 cls
+
+REM Perform full system validation before running
+call :VALIDATE_SYSTEM_FULL
+
 echo.
 echo ╔══════════════════════════════════════════════════════════════╗
 echo ║              COMPLETE IMAGE ANALYSIS - ALL TESTS             ║
@@ -343,35 +470,60 @@ echo.
 echo Input Folder:  %INPUT_DIR%
 echo Output Folder: %OUTPUT_DIR%
 echo.
-echo Starting comprehensive analysis...
-echo Please wait, this may take several minutes...
-echo.
-echo ═══════════════════════════════════════════════════════════════
 
 REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
-"%PYTHON_PATH%" main_optimized.py --source "%INPUT_DIR%" --output "%OUTPUT_DIR%"
+REM Create session log
+call :CREATE_SESSION_LOG
+call :LOG_EVENT "Starting complete analysis"
+
+echo ═══════════════════════════════════════════════════════════════
+echo [1/3] Warming up models for optimal performance...
+echo ═══════════════════════════════════════════════════════════════
+"%PYTHON_PATH%" model_cache_optimizer.py --warm-cache %GPU_FLAGS%
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
-echo Analysis complete! 
+echo [2/3] Starting comprehensive analysis...
+echo ═══════════════════════════════════════════════════════════════
+echo Please wait, this may take several minutes...
+echo Processing... (this window will update when complete)
+
+REM Execute with error handling and retry logic
+call :EXECUTE_WITH_ERROR_HANDLING '"%PYTHON_PATH%" main_optimized.py --source "%INPUT_DIR%" --output "%OUTPUT_DIR%" %GPU_FLAGS%' "Complete Analysis"
+
+echo.
+echo ═══════════════════════════════════════════════════════════════
+echo [3/3] Analysis complete! 
+echo ═══════════════════════════════════════════════════════════════ 
 echo.
 echo [1] Return to Main Menu
 echo [2] View Results Folder
 echo [3] Run Another Analysis
+echo [4] View Session Log
 echo.
-set /p complete_choice="Select option [1-3]: "
+set /p complete_choice="Select option [1-4]: "
 if "%complete_choice%"=="1" (
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%complete_choice%"=="2" (
-    start "" "Results" 2>nul
+    start "" "%OUTPUT_DIR%" 2>nul
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%complete_choice%"=="3" goto RUN_COMPLETE
+if "%complete_choice%"=="4" (
+    if exist "%SESSION_LOG%" (
+        start notepad "%SESSION_LOG%" 2>nul
+    ) else (
+        echo No session log found.
+        pause
+    )
+    color %COLOR_MAIN%
+    goto MAIN_MENU
+)
 color %COLOR_MAIN%
 goto MAIN_MENU
 
@@ -397,7 +549,7 @@ echo ═════════════════════════
 REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
-"%PYTHON_PATH%" main_optimized.py --tests text --source "%INPUT_DIR%" --output "%OUTPUT_DIR%"
+"%PYTHON_PATH%" main_optimized.py --tests text --source "%INPUT_DIR%" --output "%OUTPUT_DIR%" %GPU_FLAGS%
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
@@ -447,7 +599,7 @@ echo ═════════════════════════
 REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
-"%PYTHON_PATH%" border_detector.py --input "%INPUT_DIR%" --output "%OUTPUT_DIR%"
+"%PYTHON_PATH%" border_detector.py --input "%INPUT_DIR%" --output "%OUTPUT_DIR%" %GPU_FLAGS%
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
@@ -498,7 +650,7 @@ echo ═════════════════════════
 REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
-"%PYTHON_PATH%" main_optimized.py --tests editing --source "%INPUT_DIR%" --output "%OUTPUT_DIR%"
+"%PYTHON_PATH%" advanced_pyiqa_detector.py --fast --workers=6 --source "%INPUT_DIR%" %GPU_FLAGS%
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
@@ -548,7 +700,7 @@ echo ═════════════════════════
 REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
-"%PYTHON_PATH%" advanced_watermark_detector.py --input "%INPUT_DIR%" --output "%OUTPUT_DIR%"
+"%PYTHON_PATH%" advanced_watermark_detector.py --input "%INPUT_DIR%" --output "%OUTPUT_DIR%" %GPU_FLAGS%
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
@@ -598,7 +750,7 @@ echo ═════════════════════════
 REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
-"%PYTHON_PATH%" main_optimized.py --tests specifications --source "%INPUT_DIR%" --output "%OUTPUT_DIR%"
+"%PYTHON_PATH%" main_optimized.py --tests specifications --source "%INPUT_DIR%" --output "%OUTPUT_DIR%" %GPU_FLAGS%
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
@@ -655,7 +807,7 @@ REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 REM Use fast recommended models by default in non-interactive mode
-"%PYTHON_PATH%" advanced_pyiqa_detector.py --fast --source "%INPUT_DIR%"
+"%PYTHON_PATH%" advanced_pyiqa_detector.py --fast --workers=6 --source "%INPUT_DIR%" %GPU_FLAGS%
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
@@ -1009,3 +1161,520 @@ if /i "%invalid_choice%"=="B" (
 )
 color %COLOR_MAIN%
 goto MAIN_MENU
+
+:MODEL_CACHE_MANAGEMENT
+color %COLOR_CONFIG%
+cls
+echo.
+echo ╔══════════════════════════════════════════════════════════════╗
+echo ║                   MODEL CACHE MANAGEMENT                     ║
+echo ╚══════════════════════════════════════════════════════════════╝
+echo.
+echo Model caching improves performance by keeping AI models loaded
+echo between runs, reducing startup time from ~30s to ~5s.
+echo.
+echo ┌──────────────────────────────────────────────────────────────┐
+echo │                         OPTIONS                              │
+echo └──────────────────────────────────────────────────────────────┘
+echo.
+echo   [1] Warm Cache (Pre-load Models)     
+echo   [2] Clear Model Cache                
+echo   [3] Check Cache Status               
+echo   [4] Optimize for Speed               
+echo   [5] Optimize for Memory              
+echo   [B] Back to Main Menu
+echo.
+echo ═══════════════════════════════════════════════════════════════
+set /p cache_choice="Select an option: "
+
+if "%cache_choice%"=="1" goto WARM_CACHE
+if "%cache_choice%"=="2" goto CLEAR_CACHE
+if "%cache_choice%"=="3" goto CHECK_CACHE_STATUS
+if "%cache_choice%"=="4" goto OPTIMIZE_SPEED
+if "%cache_choice%"=="5" goto OPTIMIZE_MEMORY
+if /i "%cache_choice%"=="B" (
+    color %COLOR_MAIN%
+    goto MAIN_MENU
+)
+goto MODEL_CACHE_MANAGEMENT
+
+:WARM_CACHE
+echo.
+echo Warming up model cache...
+echo This will pre-load AI models for faster subsequent runs.
+if "%USE_GPU%"=="true" (
+    echo Using GPU acceleration: GPU %GPU_ID%
+) else (
+    echo Using CPU processing
+)
+echo.
+"%PYTHON_PATH%" model_cache_optimizer.py --warm-cache %GPU_FLAGS%
+echo.
+echo [B] Back to Cache Management
+echo.
+set /p back_choice="Press B to go back or any other key to continue: "
+if /i "%back_choice%"=="B" goto MODEL_CACHE_MANAGEMENT
+pause
+goto MODEL_CACHE_MANAGEMENT
+
+:CLEAR_CACHE
+echo.
+echo Clearing model cache...
+echo This will free up disk space but slow down the next run.
+echo.
+"%PYTHON_PATH%" model_cache_optimizer.py --clear-cache
+echo.
+echo [B] Back to Cache Management
+echo.
+set /p back_choice="Press B to go back or any other key to continue: "
+if /i "%back_choice%"=="B" goto MODEL_CACHE_MANAGEMENT
+pause
+goto MODEL_CACHE_MANAGEMENT
+
+:CHECK_CACHE_STATUS
+echo.
+echo Checking cache status...
+echo.
+if exist "%TEMP%\photovalidator_cache\model_cache.pkl" (
+    echo ✅ Model cache exists
+    for %%f in ("%TEMP%\photovalidator_cache\model_cache.pkl") do (
+        echo    Size: %%~zf bytes
+        echo    Modified: %%~tf
+    )
+) else (
+    echo ❌ No model cache found
+    echo    First run will be slower as models load from scratch
+)
+echo.
+echo [B] Back to Cache Management
+echo.
+set /p back_choice="Press B to go back or any other key to continue: "
+if /i "%back_choice%"=="B" goto MODEL_CACHE_MANAGEMENT
+pause
+goto MODEL_CACHE_MANAGEMENT
+
+:OPTIMIZE_SPEED
+echo.
+echo Optimizing for maximum speed...
+echo - Enabling model caching
+echo - Pre-loading essential models
+if "%USE_GPU%"=="true" (
+    echo - Using GPU acceleration: GPU %GPU_ID%
+) else (
+    echo - Using CPU for consistent performance
+)
+echo.
+"%PYTHON_PATH%" model_cache_optimizer.py --warm-cache %GPU_FLAGS%
+echo.
+echo Speed optimization complete!
+echo Next analysis runs will be significantly faster.
+echo.
+echo [B] Back to Cache Management
+echo.
+set /p back_choice="Press B to go back or any other key to continue: "
+if /i "%back_choice%"=="B" goto MODEL_CACHE_MANAGEMENT
+pause
+goto MODEL_CACHE_MANAGEMENT
+
+:OPTIMIZE_MEMORY
+echo.
+echo Optimizing for memory usage...
+echo - Clearing cached models
+echo - Models will load on-demand
+echo - Slower but uses less memory
+echo.
+"%PYTHON_PATH%" model_cache_optimizer.py --clear-cache
+echo.
+echo Memory optimization complete!
+echo System will use minimal memory but runs may be slower.
+echo.
+echo [B] Back to Cache Management
+echo.
+set /p back_choice="Press B to go back or any other key to continue: "
+if /i "%back_choice%"=="B" goto MODEL_CACHE_MANAGEMENT
+pause
+goto MODEL_CACHE_MANAGEMENT
+
+:GPU_CONFIGURATION
+color %COLOR_CONFIG%
+cls
+echo.
+echo ╔══════════════════════════════════════════════════════════════╗
+echo ║                     GPU CONFIGURATION                        ║
+echo ╚══════════════════════════════════════════════════════════════╝
+echo.
+echo Current GPU Settings:
+echo   Use GPU:  %USE_GPU%
+echo   GPU ID:   %GPU_ID%
+echo   Flags:    %GPU_FLAGS%
+echo.
+
+REM Check GPU availability
+"%PYTHON_PATH%" gpu_diagnostic.py --quiet >gpu_status.tmp 2>&1
+if exist gpu_status.tmp (
+    findstr "CUDA Available: True" gpu_status.tmp >nul
+    if errorlevel 1 (
+        echo ❌ No CUDA-capable GPU detected
+        echo    CPU mode will be used regardless of settings
+    ) else (
+        echo ✅ CUDA-capable GPU detected
+        for /f "tokens=*" %%i in ('findstr "GPU.*:" gpu_status.tmp') do echo    %%i
+    )
+    del gpu_status.tmp
+) else (
+    echo ⚠️  Unable to check GPU status
+)
+
+echo.
+echo ┌──────────────────────────────────────────────────────────────┐
+echo │                         OPTIONS                              │
+echo └──────────────────────────────────────────────────────────────┘
+echo.
+echo   [1] Enable GPU Processing            
+echo   [2] Disable GPU (Force CPU)          
+echo   [3] Select GPU Device ID             
+echo   [4] Test GPU Performance             
+echo   [5] View GPU Diagnostic Report       
+echo   [B] Back to Main Menu
+echo.
+echo ═══════════════════════════════════════════════════════════════
+set /p gpu_choice="Select an option: "
+
+if "%gpu_choice%"=="1" goto ENABLE_GPU
+if "%gpu_choice%"=="2" goto DISABLE_GPU
+if "%gpu_choice%"=="3" goto SELECT_GPU_ID
+if "%gpu_choice%"=="4" goto TEST_GPU_PERFORMANCE
+if "%gpu_choice%"=="5" goto VIEW_GPU_DIAGNOSTIC
+if /i "%gpu_choice%"=="B" (
+    color %COLOR_MAIN%
+    goto MAIN_MENU
+)
+goto GPU_CONFIGURATION
+
+:ENABLE_GPU
+set "USE_GPU=true"
+set "GPU_FLAGS=--gpu"
+echo.
+echo ✅ GPU processing enabled
+echo    Detectors will attempt to use CUDA acceleration
+echo    Note: Fallback to CPU will occur if GPU is unavailable
+echo.
+echo [B] Back to GPU Configuration
+echo.
+set /p back_choice="Press B to go back or any other key to continue: "
+if /i "%back_choice%"=="B" goto GPU_CONFIGURATION
+pause
+goto GPU_CONFIGURATION
+
+:DISABLE_GPU
+set "USE_GPU=false"
+set "GPU_FLAGS=--cpu"
+echo.
+echo 💻 GPU processing disabled
+echo    All detectors will use CPU processing
+echo    This ensures maximum compatibility but slower performance
+echo.
+echo [B] Back to GPU Configuration
+echo.
+set /p back_choice="Press B to go back or any other key to continue: "
+if /i "%back_choice%"=="B" goto GPU_CONFIGURATION
+pause
+goto GPU_CONFIGURATION
+
+:SELECT_GPU_ID
+echo.
+echo Select GPU Device ID:
+echo   0 - Primary GPU (default)
+echo   1 - Secondary GPU (if available)
+echo   2 - Third GPU (if available)
+echo.
+set /p new_gpu_id="Enter GPU ID [0-3]: "
+
+REM Validate input
+echo %new_gpu_id%| findstr /r "^[0-3]$" >nul
+if errorlevel 1 (
+    echo ❌ Invalid GPU ID. Must be 0, 1, 2, or 3
+    pause
+    goto SELECT_GPU_ID
+)
+
+set "GPU_ID=%new_gpu_id%"
+if "%USE_GPU%"=="true" (
+    set "GPU_FLAGS=--gpu=%GPU_ID%"
+) else (
+    set "GPU_FLAGS=--cpu"
+)
+
+echo.
+echo ✅ GPU ID set to: %GPU_ID%
+if "%USE_GPU%"=="true" (
+    echo    Will use GPU %GPU_ID% for processing
+) else (
+    echo    Note: GPU is currently disabled, enable it to use GPU %GPU_ID%
+)
+echo.
+echo [B] Back to GPU Configuration
+echo.
+set /p back_choice="Press B to go back or any other key to continue: "
+if /i "%back_choice%"=="B" goto GPU_CONFIGURATION
+pause
+goto GPU_CONFIGURATION
+
+:TEST_GPU_PERFORMANCE
+echo.
+echo Testing GPU performance...
+echo This will run a quick benchmark to compare CPU vs GPU processing
+echo.
+"%PYTHON_PATH%" performance_benchmark.py --gpu-test
+echo.
+echo [B] Back to GPU Configuration
+echo.
+set /p back_choice="Press B to go back or any other key to continue: "
+if /i "%back_choice%"=="B" goto GPU_CONFIGURATION
+pause
+goto GPU_CONFIGURATION
+
+:VIEW_GPU_DIAGNOSTIC
+echo.
+echo Running detailed GPU diagnostic...
+echo.
+"%PYTHON_PATH%" gpu_diagnostic.py
+echo.
+echo [B] Back to GPU Configuration
+echo.
+set /p back_choice="Press B to go back or any other key to continue: "
+if /i "%back_choice%"=="B" goto GPU_CONFIGURATION
+pause
+goto GPU_CONFIGURATION
+
+REM ═══════════════════════════════════════════════════════════════════════════
+REM SYSTEM VALIDATION AND UTILITY FUNCTIONS
+REM ═══════════════════════════════════════════════════════════════════════════
+
+:VALIDATE_SYSTEM_QUICK
+REM Quick validation for main menu display
+set "SYSTEM_STATUS=✅"
+set "SYSTEM_ISSUES="
+
+REM Check Python
+"%PYTHON_PATH%" --version >nul 2>&1
+if errorlevel 1 (
+    set "SYSTEM_STATUS=⚠️"
+    set "SYSTEM_ISSUES=Python"
+)
+
+REM Check input directory
+if not exist "%INPUT_DIR%" (
+    set "SYSTEM_STATUS=⚠️"
+    if defined SYSTEM_ISSUES (
+        set "SYSTEM_ISSUES=%SYSTEM_ISSUES%, Input Dir"
+    ) else (
+        set "SYSTEM_ISSUES=Input Dir"
+    )
+)
+goto :EOF
+
+:VALIDATE_SYSTEM_FULL
+echo.
+echo ╔══════════════════════════════════════════════════════════════╗
+echo ║                    SYSTEM VALIDATION                         ║
+echo ╚══════════════════════════════════════════════════════════════╝
+echo.
+echo Validating system requirements...
+echo.
+
+set "validation_failed=0"
+
+REM Check Python
+echo [1/5] Checking Python installation...
+"%PYTHON_PATH%" --version >nul 2>&1
+if errorlevel 1 (
+    echo ❌ Python not found at: %PYTHON_PATH%
+    echo    Please configure Python path in settings.
+    set "validation_failed=1"
+) else (
+    for /f "tokens=*" %%i in ('"%PYTHON_PATH%" --version 2^>^&1') do echo ✅ %%i
+)
+
+REM Check core dependencies
+echo [2/5] Checking Python dependencies...
+"%PYTHON_PATH%" -c "import sys; print('Python', sys.version.split()[0])" >nul 2>&1
+if errorlevel 1 (
+    echo ❌ Python interpreter error
+    set "validation_failed=1"
+) else (
+    echo ✅ Python interpreter: OK
+)
+
+"%PYTHON_PATH%" -c "import numpy; print('NumPy:', numpy.__version__)" 2>nul
+if errorlevel 1 (
+    echo ❌ NumPy not available
+    set "validation_failed=1"
+) else (
+    echo ✅ NumPy: Available
+)
+
+"%PYTHON_PATH%" -c "import PIL; print('Pillow:', PIL.__version__)" 2>nul
+if errorlevel 1 (
+    echo ❌ Pillow not available
+    set "validation_failed=1"
+) else (
+    echo ✅ Pillow: Available
+)
+
+REM Check directories
+echo [3/5] Checking directories...
+if not exist "%INPUT_DIR%" (
+    echo ❌ Input directory does not exist: %INPUT_DIR%
+    set "validation_failed=1"
+) else (
+    echo ✅ Input Directory: %INPUT_DIR%
+    for /f %%i in ('dir /b "%INPUT_DIR%\*.jpg" "%INPUT_DIR%\*.png" "%INPUT_DIR%\*.jpeg" 2^>nul ^| find /c /v ""') do (
+        if %%i GTR 0 (
+            echo    └─ Found %%i image files
+        ) else (
+            echo    └─ ⚠️  No image files found
+        )
+    )
+)
+
+REM Check output directory writability
+echo [4/5] Checking output directory access...
+if not exist "%OUTPUT_DIR%" (
+    mkdir "%OUTPUT_DIR%" 2>nul
+    if errorlevel 1 (
+        echo ❌ Cannot create output directory: %OUTPUT_DIR%
+        set "validation_failed=1"
+    ) else (
+        echo ✅ Output Directory: %OUTPUT_DIR% (created)
+        rmdir "%OUTPUT_DIR%" 2>nul
+    )
+) else (
+    echo ✅ Output Directory: %OUTPUT_DIR% (exists)
+    echo test > "%OUTPUT_DIR%\write_test.tmp" 2>nul
+    if errorlevel 1 (
+        echo ❌ Output directory is not writable
+        set "validation_failed=1"
+    ) else (
+        echo    └─ Write access: OK
+        del "%OUTPUT_DIR%\write_test.tmp" 2>nul
+    )
+)
+
+REM Check main script
+echo [5/5] Checking main script...
+if exist "main_optimized.py" (
+    echo ✅ Main script: main_optimized.py found
+) else (
+    echo ❌ Main script: main_optimized.py not found
+    set "validation_failed=1"
+)
+
+echo.
+if "%validation_failed%"=="1" (
+    color %COLOR_ERROR%
+    echo ❌ VALIDATION FAILED
+    echo    Please fix the issues above before running analysis.
+    echo.
+    echo [C] Continue anyway (may fail)
+    echo [S] Go to Settings
+    echo [B] Back to main menu
+    echo.
+    choice /c CSB /m "Select option"
+    if errorlevel 3 (
+        color %COLOR_MAIN%
+        goto MAIN_MENU
+    )
+    if errorlevel 2 (
+        color %COLOR_CONFIG%
+        goto CONFIGURE_PATHS
+    )
+    REM Continue anyway if errorlevel 1
+    color %COLOR_ANALYSIS%
+) else (
+    echo ✅ SYSTEM VALIDATION COMPLETE
+    echo    All requirements met. Ready for analysis.
+    echo.
+)
+goto :EOF
+
+:CREATE_SESSION_LOG
+REM Create session log with timestamp
+set "TIMESTAMP=%DATE:~-4,4%-%DATE:~-10,2%-%DATE:~-7,2%_%TIME:~0,2%-%TIME:~3,2%-%TIME:~6,2%"
+set "TIMESTAMP=%TIMESTAMP: =0%"
+set "SESSION_LOG=%OUTPUT_DIR%\logs\session_%TIMESTAMP%.log"
+
+REM Create logs directory
+if not exist "%OUTPUT_DIR%\logs" mkdir "%OUTPUT_DIR%\logs" 2>nul
+
+REM Initialize session log
+echo === PhotoValidator Session Log === > "%SESSION_LOG%" 2>nul
+echo Date/Time: %DATE% %TIME% >> "%SESSION_LOG%" 2>nul
+echo User: %USERNAME% >> "%SESSION_LOG%" 2>nul
+echo Computer: %COMPUTERNAME% >> "%SESSION_LOG%" 2>nul
+echo Input Directory: %INPUT_DIR% >> "%SESSION_LOG%" 2>nul
+echo Output Directory: %OUTPUT_DIR% >> "%SESSION_LOG%" 2>nul
+echo Python Path: %PYTHON_PATH% >> "%SESSION_LOG%" 2>nul
+echo ================================== >> "%SESSION_LOG%" 2>nul
+goto :EOF
+
+:LOG_EVENT
+REM Usage: call :LOG_EVENT "message"
+if defined SESSION_LOG (
+    echo %TIME% - %~1 >> "%SESSION_LOG%" 2>nul
+)
+goto :EOF
+
+:EXECUTE_WITH_ERROR_HANDLING
+REM Usage: call :EXECUTE_WITH_ERROR_HANDLING "command" "operation_name"
+set "retry_count=0"
+
+:RETRY_OPERATION
+set /a retry_count+=1
+if %retry_count% GEQ 4 (
+    color %COLOR_ERROR%
+    echo ❌ Maximum retry attempts reached. Operation failed.
+    echo Please check your configuration and try again.
+    call :LOG_EVENT "Operation failed after 3 retries: %~2"
+    pause
+    color %COLOR_MAIN%
+    goto MAIN_MENU
+)
+
+if %retry_count% GTR 1 (
+    echo.
+    echo Attempt %retry_count% of 3...
+    call :LOG_EVENT "Retry attempt %retry_count% for: %~2"
+)
+
+call :LOG_EVENT "Starting operation: %~2"
+%~1
+if errorlevel 1 (
+    color %COLOR_ERROR%
+    echo.
+    echo ❌ Operation failed: %~2
+    echo Error code: %errorlevel%
+    call :LOG_EVENT "Operation failed with error code %errorlevel%: %~2"
+    
+    if %retry_count% LSS 3 (
+        echo.
+        choice /c YN /m "Retry operation? (Y/N)"
+        if errorlevel 2 (
+            color %COLOR_MAIN%
+            goto MAIN_MENU
+        )
+        color %COLOR_ANALYSIS%
+        goto RETRY_OPERATION
+    ) else (
+        echo.
+        echo Maximum retry attempts reached.
+        pause
+        color %COLOR_MAIN%
+        goto MAIN_MENU
+    )
+) else (
+    echo.
+    echo ✅ Operation completed successfully: %~2
+    call :LOG_EVENT "Operation completed successfully: %~2"
+)
+goto :EOF

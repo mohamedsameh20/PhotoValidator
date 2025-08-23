@@ -13,34 +13,103 @@ from typing import List, Union, Dict, Tuple, Optional
 from pathlib import Path
 import logging
 
-# Suppress deprecation warnings from timm and all PyTorch warnings
-warnings.filterwarnings("ignore", category=FutureWarning, module="timm")
-warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
-warnings.filterwarnings("ignore", category=FutureWarning, message=".*torch.load.*")
-warnings.filterwarnings("ignore", category=FutureWarning, message=".*weights_only.*")
-warnings.filterwarnings("ignore", category=UserWarning, module="torch")
-warnings.filterwarnings("ignore", category=UserWarning, message=".*weights_only.*")
+# More targeted warning suppression - only suppress specific known issues
+def suppress_known_warnings():
+    """Suppress only specific known warnings that are safe to ignore."""
+    warnings.filterwarnings("ignore", message=".*weights_only.*")
+    warnings.filterwarnings("ignore", message=".*torch.load.*")
+    warnings.filterwarnings("ignore", message=".*FutureWarning.*timm.*")
 
-# Import torch with warnings suppressed
-with warnings.catch_warnings():
-    warnings.simplefilter("ignore")
-    import torch
+suppress_known_warnings()
+
+# Import torch normally - only suppress during model loading if needed
+import torch
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-# Add watermark-detection path to sys.path if needed
-watermark_detection_path = os.path.join(os.path.dirname(__file__), 'watermark-detection')
-if watermark_detection_path not in sys.path:
-    sys.path.insert(0, watermark_detection_path)
+# Set up configurable logging early
+def setup_logging(level='INFO'):
+    """Setup logging with configurable level."""
+    numeric_level = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=numeric_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
-from wmdetection.models import get_watermarks_detection_model
-from wmdetection.pipelines.predictor import WatermarksPredictor
-from wmdetection.utils.files import list_images, read_image_rgb
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Initialize logging
+setup_logging()
 logger = logging.getLogger(__name__)
+
+# Better import management with proper fallback
+try:
+    from wmdetection.models import get_watermarks_detection_model
+    from wmdetection.pipelines.predictor import WatermarksPredictor
+    from wmdetection.utils.files import list_images, read_image_rgb
+except ImportError:
+    # Only modify path as fallback if imports fail
+    watermark_detection_path = os.path.join(os.path.dirname(__file__), 'watermark-detection')
+    if watermark_detection_path not in sys.path:
+        sys.path.insert(0, watermark_detection_path)
+    
+    try:
+        from wmdetection.models import get_watermarks_detection_model
+        from wmdetection.pipelines.predictor import WatermarksPredictor
+        from wmdetection.utils.files import list_images, read_image_rgb
+    except ImportError as e:
+        logger.error(f"Failed to import watermark detection modules: {e}")
+        logger.error("Please ensure the watermark-detection package is properly installed")
+        raise
+
+
+class WatermarkDetectorConfig:
+    """Configuration management for watermark detector."""
+    
+    def __init__(self, config_file=None):
+        # Default configuration
+        self.model_name = 'convnext-tiny'
+        self.device = 'auto'  # auto, cpu, cuda:0, etc.
+        self.high_confidence_threshold = 96.0
+        self.manual_review_threshold = 91.0
+        self.batch_size = 8
+        self.num_workers = 4
+        self.fp16 = False
+        self.cache_dir = './models/watermark_cache'
+        self.log_level = 'INFO'
+        
+        if config_file and os.path.exists(config_file):
+            self.load_from_file(config_file)
+    
+    def load_from_file(self, config_file):
+        """Load configuration from JSON file."""
+        try:
+            with open(config_file, 'r') as f:
+                config_data = json.load(f)
+                for key, value in config_data.items():
+                    if hasattr(self, key):
+                        setattr(self, key, value)
+        except Exception as e:
+            logger.warning(f"Failed to load config from {config_file}: {e}")
+    
+    def save_to_file(self, config_file):
+        """Save configuration to JSON file."""
+        config_data = {
+            'model_name': self.model_name,
+            'device': self.device,
+            'high_confidence_threshold': self.high_confidence_threshold,
+            'manual_review_threshold': self.manual_review_threshold,
+            'batch_size': self.batch_size,
+            'num_workers': self.num_workers,
+            'fp16': self.fp16,
+            'cache_dir': self.cache_dir,
+            'log_level': self.log_level
+        }
+        
+        try:
+            with open(config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save config to {config_file}: {e}")
 
 
 class AdvancedWatermarkDetector:
@@ -58,7 +127,8 @@ class AdvancedWatermarkDetector:
         model_name: str = 'convnext-tiny',
         device: Optional[str] = None,
         cache_dir: str = './models/watermark_cache',
-        fp16: bool = False
+        fp16: bool = False,
+        config: Optional[WatermarkDetectorConfig] = None
     ):
         """
         Initialize the watermark detector with enhanced error handling.
@@ -68,10 +138,18 @@ class AdvancedWatermarkDetector:
             device: Device to run on ('cuda:0', 'cpu', etc.). Auto-detected if None.
             cache_dir: Directory to cache model weights
             fp16: Use half precision (not supported with ConvNeXt models)
+            config: Optional WatermarkDetectorConfig object to override other parameters
         """
-        self.model_name = model_name
-        self.cache_dir = os.path.abspath(cache_dir)
-        self.fp16 = fp16
+        # Use config object if provided, otherwise use individual parameters
+        if config is not None:
+            self.model_name = config.model_name
+            self.cache_dir = os.path.abspath(config.cache_dir)
+            self.fp16 = config.fp16
+            device = config.device if device is None else device
+        else:
+            self.model_name = model_name
+            self.cache_dir = os.path.abspath(cache_dir)
+            self.fp16 = fp16
         self.initialization_error = None
         
         # Test PyTorch availability first
@@ -85,14 +163,28 @@ class AdvancedWatermarkDetector:
             logger.error(self.initialization_error)
             raise RuntimeError(self.initialization_error)
         
-        # Auto-detect device if not specified, but prefer CPU for stability
-        if device is None:
-            # Force CPU mode to avoid CUDA DLL issues
-            self.device = 'cpu'
-            if torch.cuda.is_available():
-                logger.info("CUDA available but using CPU mode for stability")
+        # Smart device selection with proper GPU testing
+        if device is None or device == 'auto':
+            try:
+                if torch.cuda.is_available():
+                    # Test GPU functionality with a small operation
+                    test_tensor = torch.tensor([1.0]).cuda()
+                    _ = test_tensor.sum()
+                    self.device = 'cuda:0'
+                    logger.info("GPU test successful - using CUDA for processing")
+                else:
+                    self.device = 'cpu'
+                    logger.info("CUDA not available - using CPU for processing")
+            except Exception as e:
+                logger.warning(f"GPU test failed ({e}) - falling back to CPU for stability")
+                self.device = 'cpu'
         else:
-            self.device = device
+            # Validate the provided device
+            if device.startswith('cuda') and not torch.cuda.is_available():
+                logger.warning(f"CUDA device '{device}' requested but CUDA not available, falling back to CPU")
+                self.device = 'cpu'
+            else:
+                self.device = device
             
         # Validate fp16 settings
         if self.fp16 and model_name.startswith('convnext'):
@@ -103,8 +195,8 @@ class AdvancedWatermarkDetector:
         if self.device == 'cpu':
             self.fp16 = False  # Disable FP16 for CPU
             
-        logger.info(f"Initializing watermark detector with model: {model_name}")
-        logger.info(f"Device: {self.device} (forced CPU for stability)")
+        logger.info(f"Initializing watermark detector with model: {self.model_name}")
+        logger.info(f"Device: {self.device}")
         logger.info(f"Cache directory: {self.cache_dir}")
         
         # Create cache directory
@@ -149,12 +241,19 @@ class AdvancedWatermarkDetector:
             self.initialization_error = error_msg
             
             # Provide helpful suggestions based on error type
-            if "DLL" in str(e) or "shm.dll" in str(e):
+            error_str = str(e)
+            if "DLL" in error_str or "shm.dll" in error_str:
                 suggestion = "Try reinstalling PyTorch: pip install torch --force-reinstall"
-            elif "CUDA" in str(e):
+            elif "CUDA" in error_str:
                 suggestion = "CUDA issue detected, try CPU-only mode"
-            elif "memory" in str(e).lower():
+            elif "memory" in error_str.lower():
                 suggestion = "Insufficient memory, try a smaller model"
+            elif "UntypedStorage" in error_str and "tagged with auto" in error_str:
+                suggestion = "PyTorch device mapping issue. Try: pip install torch --upgrade or use explicit device (cpu/cuda:0)"
+            elif "weights_only" in error_str:
+                suggestion = "Model compatibility issue with weights_only=True. Update PyTorch or use older model format"
+            elif "restore data location" in error_str:
+                suggestion = "Model file may be corrupted or incompatible. Try re-downloading the model weights"
             else:
                 suggestion = "Check PyTorch installation and dependencies"
                 
@@ -208,15 +307,31 @@ class AdvancedWatermarkDetector:
                 'model_used': self.model_name
             }
             
+        except FileNotFoundError:
+            error_msg = f"File not found: {image_path}"
+            logger.error(error_msg)
         except Exception as e:
-            logger.error(f"Error processing {image_path}: {e}")
-            return {
-                'image_path': image_path,
-                'has_watermark': None,
-                'prediction': 'error',
-                'error': str(e),
-                'model_used': self.model_name
-            }
+            # Check for specific error types
+            error_str = str(e).lower()
+            if "unidentified image" in error_str or "cannot identify image" in error_str:
+                error_msg = f"Corrupted or unsupported image format: {image_path}"
+            elif "cuda" in error_str and "memory" in error_str:
+                error_msg = f"GPU memory exhausted processing: {image_path}"
+            elif "dll" in error_str:
+                error_msg = f"DLL/library error processing: {image_path}"
+            else:
+                error_msg = f"Unexpected error processing {image_path}: {e}"
+            
+            logger.error(error_msg)
+        
+        # Return error result for any exception
+        return {
+            'image_path': image_path,
+            'has_watermark': None,
+            'prediction': 'error',
+            'error': error_msg,
+            'model_used': self.model_name
+        }
     
     def predict_batch(
         self, 
@@ -312,6 +427,55 @@ class AdvancedWatermarkDetector:
         except Exception as e:
             logger.error(f"Error in batch processing: {e}")
             raise
+    
+    def clear_gpu_cache(self):
+        """Clear GPU memory cache to prevent memory buildup."""
+        if torch.cuda.is_available() and self.device.startswith('cuda'):
+            torch.cuda.empty_cache()
+            logger.debug("GPU cache cleared")
+    
+    def predict_single_image_with_retry(self, image_path: str, max_retries: int = 3) -> Dict:
+        """
+        Predict with retry mechanism for transient failures.
+        
+        Args:
+            image_path: Path to the image file
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            Dictionary with prediction results
+        """
+        for attempt in range(max_retries):
+            try:
+                result = self.predict_single_image(image_path)
+                if result.get('prediction') != 'error':
+                    return result
+                    
+                # If we got an error result, retry on certain error types
+                error_msg = result.get('error', '').lower()
+                if any(keyword in error_msg for keyword in ['memory', 'cuda', 'dll']):
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Attempt {attempt + 1} failed for {image_path}, retrying...")
+                        time.sleep(1)  # Brief pause before retry
+                        self.clear_gpu_cache()  # Clear cache before retry
+                        continue
+                
+                return result  # Return error result if not retryable
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Attempt {attempt + 1} failed for {image_path}: {e}")
+                    time.sleep(1)
+                    self.clear_gpu_cache()
+                    continue
+                # Final attempt failed
+                return {
+                    'image_path': image_path,
+                    'has_watermark': None,
+                    'prediction': 'error',
+                    'error': f"Failed after {max_retries} attempts: {e}",
+                    'model_used': self.model_name
+                }
     
     def scan_directory(
         self, 
@@ -530,13 +694,13 @@ class AdvancedWatermarkDetector:
                 # Flag high-confidence watermarks (>95%)
                 watermark_confidence = result.get('confidence_watermarked', 0) * 100
                 if watermark_confidence > 95:
-                    status_display = "🚩 FLAGGED"  # High confidence watermark
+                    status_display = "FLAGGED"  # High confidence watermark
                 else:
-                    status_display = "🚫 WATERMARK"
+                    status_display = "WATERMARK"
             elif status == 'clean':
-                status_display = "✓ CLEAN"
+                status_display = "CLEAN"
             else:
-                status_display = "⚠ ERROR"
+                status_display = "ERROR"
             
             row = f"{i:<3} {filename:<35} {status_display:<12} {confidence:<12} {clean_conf:<10} {watermark_conf:<12} {time_taken:<8}"
             print(row)
@@ -680,10 +844,10 @@ class AdvancedWatermarkDetector:
         total_processed = sum(len(files) for files in organization_stats.values())
         
         categories = [
-            ("🚩 INVALID (WATERMARKED) (>96%)", organization_stats['invalid'], "invalid/"),
-            ("⚠️  MANUAL REVIEW (91-96%)", organization_stats['manualreview'], "manualreview/"),
-            ("✅ VALID IMAGES", organization_stats['valid'], "valid/"),
-            ("❌ ERRORS", organization_stats['errors'], "errors/")
+            ("INVALID (WATERMARKED) (>96%)", organization_stats['invalid'], "invalid/"),
+            ("MANUAL REVIEW (91-96%)", organization_stats['manualreview'], "manualreview/"),
+            ("VALID IMAGES", organization_stats['valid'], "valid/"),
+            ("ERRORS", organization_stats['errors'], "errors/")
         ]
         
         for category_name, files, folder_name in categories:
@@ -809,6 +973,75 @@ class AdvancedWatermarkDetector:
         
         print("\n" + "=" * 120)
 
+    def run_self_test(self) -> bool:
+        """
+        Run self-test to verify model functionality.
+        
+        Returns:
+            bool: True if self-test passes, False otherwise
+        """
+        import tempfile
+        
+        try:
+            logger.info("Running self-test...")
+            
+            # Create small test image
+            test_image = Image.new('RGB', (224, 224), color='white')
+            
+            # Use a proper temp file that gets closed before use
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+                temp_path = tmp.name
+            
+            try:
+                # Save image to the closed temp file
+                test_image.save(temp_path, 'JPEG')
+                
+                # Test prediction
+                result = self.predict_single_image(temp_path)
+                
+                # Check if prediction succeeded
+                success = (
+                    result.get('prediction') is not None and 
+                    result.get('prediction') != 'error' and
+                    'confidence_clean' in result and
+                    'confidence_watermarked' in result and
+                    'has_watermark' in result and
+                    result.get('has_watermark') is not None  # Should be True or False, not None
+                )
+                
+                if success:
+                    logger.info("Self-test passed successfully")
+                    return True
+                else:
+                    logger.error(f"Self-test failed: Invalid result format: {result}")
+                    return False
+                    
+            finally:
+                # Cleanup temp file
+                try:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup temp file: {cleanup_error}")
+                    
+        except Exception as e:
+            logger.error(f"Self-test failed with exception: {e}")
+            return False
+    
+    def get_model_info(self) -> Dict:
+        """Get comprehensive information about the current model and system."""
+        return {
+            'model_name': self.model_name,
+            'device': self.device,
+            'fp16_enabled': self.fp16,
+            'cache_directory': self.cache_dir,
+            'model_loaded': hasattr(self, 'model') and self.model is not None,
+            'predictor_ready': hasattr(self, 'predictor') and self.predictor is not None,
+            'cuda_available': torch.cuda.is_available(),
+            'cuda_device_count': torch.cuda.device_count() if torch.cuda.is_available() else 0,
+            'initialization_error': getattr(self, 'initialization_error', None)
+        }
+
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -849,13 +1082,22 @@ def main():
     print("=" * 50)
     
     try:
-        # Initialize detector
-        detector = AdvancedWatermarkDetector(
-            model_name=args.model,
-            cache_dir='./models/watermark_cache'
-        )
+        # Create configuration from command line arguments
+        config = WatermarkDetectorConfig()
+        config.model_name = args.model
+        config.high_confidence_threshold = args.high_threshold
+        config.manual_review_threshold = args.manual_threshold
+        
+        # Initialize detector with configuration
+        detector = AdvancedWatermarkDetector(config=config)
 
         print(f"Model info: {detector.get_model_info()}")
+        
+        # Run self-test
+        if detector.run_self_test():
+            print("Self-test passed - detector ready")
+        else:
+            print("! Self-test failed - there may be issues")
 
         # Use provided input directory or check standard locations
         test_directories = [
