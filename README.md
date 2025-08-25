@@ -311,6 +311,7 @@ Core packages:
 ---
 
 *PhotoValidator - Making image validation simple and reliable.*
+────────────────────────────────────────────────────
 portrait_enhanced.jpg        67.3%                 Invalid - heavily edited (>30%)
 landscape_touched.jpg        27.1%                 Manual review needed (25-30%)
 nature_photo.jpg             12.1%                 Valid - clean image (<25%)
