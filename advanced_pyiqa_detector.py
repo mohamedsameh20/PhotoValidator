@@ -86,6 +86,10 @@ class PyIQADetectorConfig:
                 config.folder_path = arg.split('=', 1)[1].strip('"')
             elif arg == '--source' and i + 1 < len(args):
                 config.folder_path = args[i + 1].strip('"')
+            elif arg.startswith('--output='):
+                config.output_dir = arg.split('=', 1)[1].strip('"')
+            elif arg == '--output' and i + 1 < len(args):
+                config.output_dir = args[i + 1].strip('"')
             elif arg == '--fast':
                 config.selected_models = ['brisque', 'niqe', 'clipiqa']
                 config.parallel_workers = 6  # Boost parallel processing for fast mode
@@ -1397,7 +1401,7 @@ def print_main_style_editing_summary(results: list) -> None:
         print(f"{filename_short:<50} {score:>8.1f}%{'':<11} {assessment:<30}")
     
     print("-" * 120)
-    print("Note: Images 25-30% confidence → manual review, >30% confidence → invalid")
+    print("Note: Images 25-30% confidence -> manual review, >30% confidence -> invalid")
     
     # Calculate statistics with new thresholds
     valid_images = total - manual_review_needed - invalid_images
@@ -1432,9 +1436,9 @@ def print_main_style_editing_summary(results: list) -> None:
     print(f"  Processing logs: Results\\logs")
     
     print(f"\nNOTE: Three-tier classification system:")
-    print(f"      • 0-25%: Valid (clean images)")
-    print(f"      • 25-30%: Manual review needed")  
-    print(f"      • >30%: Invalid (too heavily edited)")
+    print(f"      - 0-25%: Valid (clean images)")
+    print(f"      - 25-30%: Manual review needed")  
+    print(f"      - >30%: Invalid (too heavily edited)")
     print(f"      Check the 'EDITING CONFIDENCE ANALYSIS' table above to see which images need editing review.")
     
     print("\n" + "=" * 120)
@@ -1495,7 +1499,7 @@ def process_images(detector: AdvancedEditingDetector, image_files: List[tuple]) 
             # Show progress every 10% or significant milestones
             if completed % max(1, len(image_files) // 10) == 0 or completed == len(image_files):
                 progress = (completed / len(image_files)) * 100
-                print(f"✓ Progress: {completed}/{len(image_files)} images processed ({progress:.1f}%)")
+                print(f"Progress: {completed}/{len(image_files)} images processed ({progress:.1f}%)")
     
     processing_time = time.time() - start_time
     
@@ -1585,12 +1589,12 @@ def main():
                 remaining_models = [m for m in all_models if m not in config.excluded_models]
                 print(f"Using PyIQA Models (excluding {', '.join(config.excluded_models)}): {', '.join(remaining_models)}")
             else:
-                print("Using ALL PyIQA Models: BRISQUE • NIQE • CLIP-IQA • MUSIQ • DBCNN • HyperIQA")
+                print("Using ALL PyIQA Models: BRISQUE, NIQE, CLIP-IQA, MUSIQ, DBCNN, HyperIQA")
         else:
             print("Using Feature-Based Analysis Only with Empirical Thresholds")
             print("Install PyIQA for enhanced detection: pip install pyiqa torch")
         
-        print("Features: Histogram • Edges • Frequency Domain")
+        print("Features: Histogram, Edges, Frequency Domain")
         print(f"Target folder: {config.folder_path}")
         print("Improved: Empirical thresholds, robust validation, better normalization")
         print(f"Parallel processing enabled with {config.parallel_workers} workers\n")

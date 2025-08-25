@@ -19,7 +19,6 @@ REM ===== PYTHON CONFIGURATION =====
 set "PYTHON_PATH=C:/Users/Public/Python/MyPy/Scripts/python.exe"
 
 REM ===== GPU CONFIGURATION =====
-set "USE_GPU=True"
 set "GPU_ID=0"
 set "GPU_FLAGS="
 
@@ -28,6 +27,9 @@ set "DEFAULT_INPUT=photos4testing"
 set "DEFAULT_OUTPUT=Results"
 set "INPUT_DIR=%DEFAULT_INPUT%"
 set "OUTPUT_DIR=%DEFAULT_OUTPUT%"
+
+REM ===== BOOLEAN NORMALIZATION =====
+set "USE_GPU=true"
 
 REM ═══════════════════════════════════════════════════════════════════════════
 REM INTERACTIVE MODE
@@ -66,36 +68,30 @@ echo   Python: %PYTHON_PATH%
 echo   GPU:    %USE_GPU% (ID: %GPU_ID%)
 if defined SYSTEM_STATUS (
     if defined SYSTEM_ISSUES (
-        echo   Status: %SYSTEM_STATUS% Issues: %SYSTEM_ISSUES%
+        echo   Status: %SYSTEM_STATUS% - %SYSTEM_ISSUES%
     ) else (
-        echo   Status: %SYSTEM_STATUS% All systems operational
+        echo   Status: %SYSTEM_STATUS% Ready
     )
-) else (
-    echo   Status: Checking...
 )
 echo.
 echo ┌──────────────────────────────────────────────────────────────┐
 echo │                     CORE VALIDATION TESTS                    │
 echo └──────────────────────────────────────────────────────────────┘
 echo.
-echo   [1] Complete Pipeline Analysis        
-echo   [2] Text Detection Only                 
-echo   [3] Border ^& Frame Detection         
-echo   [4] Quality ^& Editing Detection      
-echo   [5] Watermark Detection               
-echo   [6] Image Specifications Check        
+echo   [1] Routine Scan (All Tests Sequential)
+echo   [2] Custom Scan (Select Specific Tests)
+echo   [3] Text Detection Only                 
+echo   [4] Border ^& Frame Detection         
+echo   [5] Quality ^& Editing Detection      
+echo   [6] Watermark Detection               
+echo   [7] Image Specifications Check        
 echo.
 echo ┌──────────────────────────────────────────────────────────────┐
 echo │                      ADVANCED OPTIONS                        │
 echo └──────────────────────────────────────────────────────────────┘
 echo.
-echo   [7] Custom Test Combination           
-echo   [8] System Information              
-echo   [9] View Analysis Reports            
-echo   [A] Advanced PyIQA Editing Detection  
 echo   [V] Full System Validation           
 echo   [P] Configure Paths ^& Settings      
-echo   [M] Model Cache Management           
 echo   [G] GPU Configuration                
 echo.
 echo ═══════════════════════════════════════════════════════════════
@@ -103,19 +99,15 @@ echo   Press Ctrl+C to exit anytime
 echo ═══════════════════════════════════════════════════════════════
 set /p choice="Please select an option: "
 
-if "%choice%"=="1" goto RUN_COMPLETE
-if "%choice%"=="2" goto RUN_TEXT_DETECTION
-if "%choice%"=="3" goto RUN_BORDER_DETECTION
-if "%choice%"=="4" goto RUN_QUALITY_DETECTION
-if "%choice%"=="5" goto RUN_WATERMARK_DETECTION
-if "%choice%"=="6" goto RUN_SPECS_CHECK
-if "%choice%"=="7" goto CUSTOM_COMBINATION
-if "%choice%"=="8" goto SYSTEM_INFO
-if "%choice%"=="9" goto VIEW_REPORTS
-if /i "%choice%"=="A" goto RUN_ADVANCED_PYIQA
+if "%choice%"=="1" goto RUN_ROUTINE_SCAN
+if "%choice%"=="2" goto RUN_CUSTOM_SCAN
+if "%choice%"=="3" goto RUN_TEXT_DETECTION
+if "%choice%"=="4" goto RUN_BORDER_DETECTION
+if "%choice%"=="5" goto RUN_QUALITY_DETECTION
+if "%choice%"=="6" goto RUN_WATERMARK_DETECTION
+if "%choice%"=="7" goto RUN_SPECS_CHECK
 if /i "%choice%"=="V" goto FULL_SYSTEM_VALIDATION
 if /i "%choice%"=="P" goto CONFIGURE_PATHS
-if /i "%choice%"=="M" goto MODEL_CACHE_MANAGEMENT
 if /i "%choice%"=="G" goto GPU_CONFIGURATION
 goto INVALID_CHOICE
 
@@ -185,12 +177,12 @@ if not "%new_input%"=="" (
     REM Remove quotes if present and validate
     set "cleaned_path=%new_input:"=%"
     
-    REM Check for invalid characters
-    echo "!cleaned_path!" | findstr /r "[<>:\"|?*]" >nul
+    REM Check for invalid characters (allow colon for drive letters)
+    echo "!cleaned_path!" | findstr /r "[<>\"|?*]" >nul
     if not errorlevel 1 (
         color %COLOR_ERROR%
         echo.
-        echo ❌ Error: Path contains invalid characters ^(<^> : " ^| ? *^)
+        echo ❌ Error: Path contains invalid characters ^(<^> " ^| ? *^)
         echo Please enter a valid directory path.
         echo.
         pause
@@ -249,12 +241,12 @@ if not "%new_output%"=="" (
     REM Remove quotes if present and validate
     set "cleaned_path=%new_output:"=%"
     
-    REM Check for invalid characters
-    echo "!cleaned_path!" | findstr /r "[<>:\"|?*]" >nul
+    REM Check for invalid characters (allow colon for drive letters)
+    echo "!cleaned_path!" | findstr /r "[<>\"|?*]" >nul
     if not errorlevel 1 (
         color %COLOR_ERROR%
         echo.
-        echo ❌ Error: Path contains invalid characters ^(<^> : " ^| ? *^)
+        echo ❌ Error: Path contains invalid characters ^(<^> " ^| ? *^)
         echo Please enter a valid directory path.
         echo.
         pause
@@ -448,85 +440,6 @@ pause
 color %COLOR_CONFIG%
 goto CONFIGURE_PATHS
 
-:RUN_COMPLETE
-color %COLOR_ANALYSIS%
-cls
-
-REM Perform full system validation before running
-call :VALIDATE_SYSTEM_FULL
-
-echo.
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║              COMPLETE IMAGE ANALYSIS - ALL TESTS             ║
-echo ╚══════════════════════════════════════════════════════════════╝
-echo.
-echo Running comprehensive analysis with all available tests:
-echo   • Image Specifications Check
-echo   • Text Detection (PaddleOCR)
-echo   • Border ^& Frame Detection  
-echo   • Image Quality ^& Editing Detection
-echo   • Watermark Detection
-echo.
-echo Input Folder:  %INPUT_DIR%
-echo Output Folder: %OUTPUT_DIR%
-echo.
-
-REM Create output directory if it doesn't exist
-if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
-
-REM Create session log
-call :CREATE_SESSION_LOG
-call :LOG_EVENT "Starting complete analysis"
-
-echo ═══════════════════════════════════════════════════════════════
-echo [1/3] Warming up models for optimal performance...
-echo ═══════════════════════════════════════════════════════════════
-"%PYTHON_PATH%" model_cache_optimizer.py --warm-cache %GPU_FLAGS%
-
-echo.
-echo ═══════════════════════════════════════════════════════════════
-echo [2/3] Starting comprehensive analysis...
-echo ═══════════════════════════════════════════════════════════════
-echo Please wait, this may take several minutes...
-echo Processing... (this window will update when complete)
-
-REM Execute with error handling and retry logic
-call :EXECUTE_WITH_ERROR_HANDLING '"%PYTHON_PATH%" main_optimized.py --source "%INPUT_DIR%" --output "%OUTPUT_DIR%" %GPU_FLAGS%' "Complete Analysis"
-
-echo.
-echo ═══════════════════════════════════════════════════════════════
-echo [3/3] Analysis complete! 
-echo ═══════════════════════════════════════════════════════════════ 
-echo.
-echo [1] Return to Main Menu
-echo [2] View Results Folder
-echo [3] Run Another Analysis
-echo [4] View Session Log
-echo.
-set /p complete_choice="Select option [1-4]: "
-if "%complete_choice%"=="1" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-if "%complete_choice%"=="2" (
-    start "" "%OUTPUT_DIR%" 2>nul
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-if "%complete_choice%"=="3" goto RUN_COMPLETE
-if "%complete_choice%"=="4" (
-    if exist "%SESSION_LOG%" (
-        start notepad "%SESSION_LOG%" 2>nul
-    ) else (
-        echo No session log found.
-        pause
-    )
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-color %COLOR_MAIN%
-goto MAIN_MENU
-
 :RUN_TEXT_DETECTION
 color %COLOR_ANALYSIS%
 cls
@@ -535,46 +448,41 @@ echo ╔════════════════════════
 echo ║                 TEXT DETECTION ANALYSIS                      ║
 echo ╚══════════════════════════════════════════════════════════════╝
 echo.
-echo Running PaddleOCR-based text detection analysis...
-echo This will identify images containing text overlays, watermarks, and labels.
+echo Running PaddleOCR text detection analysis...
+echo This identifies text overlays, watermarks, and labels in images.
 echo.
 echo Input Folder:  %INPUT_DIR%
 echo Output Folder: %OUTPUT_DIR%
 echo.
-echo Initializing text detection models and processing images...
-echo Using PaddleOCR for advanced text recognition
+echo Processing images with AI text recognition...
 echo.
 echo ═══════════════════════════════════════════════════════════════
 
 REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
-"%PYTHON_PATH%" main_optimized.py --tests text --source "%INPUT_DIR%" --output "%OUTPUT_DIR%" %GPU_FLAGS%
+"%PYTHON_PATH%" main_optimized.py --workers=6 --tests text --source "%INPUT_DIR%" --output "%OUTPUT_DIR%" %GPU_FLAGS%
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
-echo Text detection analysis complete! Check Results folder for output.
+echo Text detection analysis complete! 
+echo ═══════════════════════════════════════════════════════════════
 echo.
 echo [1] Return to Main Menu
 echo [2] View Results Folder
 echo [3] Run Another Text Analysis
-echo [B] Back to Main Menu
 echo.
-set /p text_choice="Select option [1-3, B]: "
+set /p text_choice="Select option [1-3]: "
 if "%text_choice%"=="1" (
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%text_choice%"=="2" (
-    start "" "Results" 2>nul
+    start "" "%OUTPUT_DIR%" 2>nul
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%text_choice%"=="3" goto RUN_TEXT_DETECTION
-if /i "%text_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
 color %COLOR_MAIN%
 goto MAIN_MENU
 
@@ -586,13 +494,13 @@ echo ╔════════════════════════
 echo ║                 BORDER ^& FRAME DETECTION                    ║
 echo ╚══════════════════════════════════════════════════════════════╝
 echo.
-echo Running advanced border and frame detection...
-echo Identifying artificial borders, frames, and decorative edges
+echo Running border and frame detection...
+echo Identifying artificial borders, frames, and decorative edges.
 echo.
 echo Input Folder:  %INPUT_DIR%
 echo Output Folder: %OUTPUT_DIR%
 echo.
-echo Processing images with computer vision algorithms...
+echo Analyzing images for border elements...
 echo.
 echo ═══════════════════════════════════════════════════════════════
 
@@ -603,28 +511,24 @@ if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
-echo Border detection analysis complete! Check Results folder for output.
+echo Border detection analysis complete!
+echo ═══════════════════════════════════════════════════════════════
 echo.
 echo [1] Return to Main Menu
 echo [2] View Results Folder
 echo [3] Run Another Border Analysis
-echo [B] Back to Main Menu
 echo.
-set /p border_choice="Select option [1-3, B]: "
+set /p border_choice="Select option [1-3]: "
 if "%border_choice%"=="1" (
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%border_choice%"=="2" (
-    start "" "Results" 2>nul
+    start "" "%OUTPUT_DIR%" 2>nul
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%border_choice%"=="3" goto RUN_BORDER_DETECTION
-if /i "%border_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
 color %COLOR_MAIN%
 goto MAIN_MENU
 
@@ -636,12 +540,12 @@ echo ╔════════════════════════
 echo ║              IMAGE QUALITY ^& EDITING DETECTION              ║
 echo ╚══════════════════════════════════════════════════════════════╝
 echo.
-echo Running PyIQA-based quality and editing detection...
-echo Analyzing artifacts, compression, and artificial enhancements
+echo Running image quality and editing detection...
+echo Analyzing image artifacts, compression, and artificial enhancements.
 echo.
 echo Input Folder:  %INPUT_DIR%
 echo Output Folder: %OUTPUT_DIR%
-echo Default Model Set: BRISQUE + NIQE + CLIPIQA (FAST)
+echo Model Set: BRISQUE + NIQE + CLIPIQA (Optimized)
 echo.
 echo Processing images with AI quality metrics...
 echo.
@@ -654,28 +558,24 @@ if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
-echo Quality analysis complete! Check Results folder for output.
+echo Quality analysis complete!
+echo ═══════════════════════════════════════════════════════════════
 echo.
 echo [1] Return to Main Menu
 echo [2] View Results Folder
 echo [3] Run Another Quality Analysis
-echo [B] Back to Main Menu
 echo.
-set /p quality_choice="Select option [1-3, B]: "
+set /p quality_choice="Select option [1-3]: "
 if "%quality_choice%"=="1" (
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%quality_choice%"=="2" (
-    start "" "Results" 2>nul
+    start "" "%OUTPUT_DIR%" 2>nul
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%quality_choice%"=="3" goto RUN_QUALITY_DETECTION
-if /i "%quality_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
 color %COLOR_MAIN%
 goto MAIN_MENU
 
@@ -687,13 +587,13 @@ echo ╔════════════════════════
 echo ║                   WATERMARK DETECTION                        ║
 echo ╚══════════════════════════════════════════════════════════════╝
 echo.
-echo Running advanced CNN-based watermark detection...
-echo This will identify subtle watermarks and copyright marks.
+echo Running CNN-based watermark detection...
+echo Identifying subtle watermarks and copyright marks.
 echo.
 echo Input Folder:  %INPUT_DIR%
 echo Output Folder: %OUTPUT_DIR%
 echo.
-echo Loading models and analyzing images...
+echo Analyzing images for watermark patterns...
 echo.
 echo ═══════════════════════════════════════════════════════════════
 
@@ -704,28 +604,24 @@ if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
-echo Watermark analysis complete! Check Results folder for output.
+echo Watermark analysis complete!
+echo ═══════════════════════════════════════════════════════════════
 echo.
 echo [1] Return to Main Menu
 echo [2] View Results Folder
 echo [3] Run Another Watermark Analysis
-echo [B] Back to Main Menu
 echo.
-set /p watermark_choice="Select option [1-3, B]: "
+set /p watermark_choice="Select option [1-3]: "
 if "%watermark_choice%"=="1" (
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%watermark_choice%"=="2" (
-    start "" "Results" 2>nul
+    start "" "%OUTPUT_DIR%" 2>nul
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%watermark_choice%"=="3" goto RUN_WATERMARK_DETECTION
-if /i "%watermark_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
 color %COLOR_MAIN%
 goto MAIN_MENU
 
@@ -737,8 +633,8 @@ echo ╔════════════════════════
 echo ║                 IMAGE SPECIFICATIONS CHECK                   ║
 echo ╚══════════════════════════════════════════════════════════════╝
 echo.
-echo Running image format, size, and specification validation...
-echo This will check compliance with image requirements.
+echo Running image specifications validation...
+echo Checking format, size, and compliance requirements.
 echo.
 echo Input Folder:  %INPUT_DIR%
 echo Output Folder: %OUTPUT_DIR%
@@ -750,394 +646,202 @@ echo ═════════════════════════
 REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
-"%PYTHON_PATH%" main_optimized.py --tests specifications --source "%INPUT_DIR%" --output "%OUTPUT_DIR%" %GPU_FLAGS%
+"%PYTHON_PATH%" main_optimized.py --workers=6 --tests specifications --source "%INPUT_DIR%" --output "%OUTPUT_DIR%" %GPU_FLAGS%
 
 echo.
 echo ═══════════════════════════════════════════════════════════════
-echo Specifications analysis complete! Check Results folder for output.
+echo Specifications analysis complete!
+echo ═══════════════════════════════════════════════════════════════
 echo.
 echo [1] Return to Main Menu
 echo [2] View Results Folder
 echo [3] Run Another Specifications Check
-echo [B] Back to Main Menu
 echo.
-set /p specs_choice="Select option [1-3, B]: "
+set /p specs_choice="Select option [1-3]: "
 if "%specs_choice%"=="1" (
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%specs_choice%"=="2" (
-    start "" "Results" 2>nul
+    start "" "%OUTPUT_DIR%" 2>nul
     color %COLOR_MAIN%
     goto MAIN_MENU
 )
 if "%specs_choice%"=="3" goto RUN_SPECS_CHECK
-if /i "%specs_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
 color %COLOR_MAIN%
 goto MAIN_MENU
 
-:RUN_ADVANCED_PYIQA
+:RUN_ROUTINE_SCAN
 color %COLOR_ANALYSIS%
 cls
 echo.
 echo ╔══════════════════════════════════════════════════════════════╗
-echo ║            ADVANCED PYIQA EDITING DETECTION                 ║
+echo ║                     ROUTINE SCAN MODE                        ║
 echo ╚══════════════════════════════════════════════════════════════╝
 echo.
-echo Running advanced PyIQA-based image editing detection...
-echo This uses multiple AI quality metrics with customizable model selection.
+echo Running complete routine scan using optimized Python routine...
+echo This integrates all tests with debug output and proper organization.
 echo.
 echo Input Folder:  %INPUT_DIR%
 echo Output Folder: %OUTPUT_DIR%
 echo.
-echo Features:
-echo   - Multiple PyIQA quality models (BRISQUE, NIQE, MUSIQ, etc.)
-echo   - User-selectable model combinations
-echo   - Empirical thresholds and robust scoring
-echo   - Feature-based analysis integration
-echo.
-echo Starting analysis with model selection prompt...
+echo This will analyze all images and organize them by test results.
+echo Each test checks for different image quality issues.
 echo.
 echo ═══════════════════════════════════════════════════════════════
 
 REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
-REM Use fast recommended models by default in non-interactive mode
-"%PYTHON_PATH%" advanced_pyiqa_detector.py --fast --workers=6 --source "%INPUT_DIR%" %GPU_FLAGS%
+echo Starting comprehensive routine scan...
+echo.
+"%PYTHON_PATH%" routine_scan_simple.py --input "%INPUT_DIR%" --output "%OUTPUT_DIR%" --python "%PYTHON_PATH%"
 
+if errorlevel 1 (
+    echo.
+    echo ⚠️ Some tests encountered issues but processing completed
+    echo Please check the Results folder for details.
+) else (
+    echo.
+    echo ✅ All tests completed successfully!
+)
+
+echo ═══════════════════════════════════════════════════════════════
+echo 🎉 ROUTINE SCAN COMPLETED! 🎉
+echo ═══════════════════════════════════════════════════════════════
+echo.
+echo Your images have been processed and organized into:
+echo.
+echo 📁 Results Structure:
+echo   ├── Valid\                    - Images that passed all tests
+echo   ├── Invalid\
+echo   │   ├── Specifications\       - Images with format/size issues
+echo   │   ├── Border\               - Images with borders or frames
+echo   │   ├── Watermark\            - Images with watermarks detected
+echo   │   └── Quality\              - Images with quality issues
+echo   ├── ManualReview\             - Images needing your review
+echo   └── logs\                     - Processing logs
+echo.
+echo Check the Results folder to see your organized images!
 echo.
 echo ═══════════════════════════════════════════════════════════════
-echo Advanced PyIQA analysis complete! Check Results folder for output.
+echo Press any key to continue...
+echo ═══════════════════════════════════════════════════════════════
+pause
+goto ROUTINE_POSTMENU
+
+:ROUTINE_POSTMENU
 echo.
 echo [1] Return to Main Menu
 echo [2] View Results Folder
-echo [3] Run Another Advanced Analysis
-echo [4] Run PyIQA Model Combinations Test
-echo [B] Back to Main Menu
+echo [3] Run Another Routine Scan
 echo.
-set /p advanced_choice="Select option [1-4, B]: "
-if "%advanced_choice%"=="1" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-if "%advanced_choice%"=="2" (
-    start "" "Results" 2>nul
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-if "%advanced_choice%"=="3" goto RUN_ADVANCED_PYIQA
-if "%advanced_choice%"=="4" (
-    echo.
-    echo Running PyIQA Model Combinations Test...
-    "%PYTHON_PATH%" pyiqa_model_combinations_test.py
+set "routine_choice="
+set /p routine_choice="Select option [1-3]: "
+
+if /i "%routine_choice%"=="1" goto MAIN_MENU
+
+if /i "%routine_choice%"=="2" (
+  if exist "%OUTPUT_DIR%" (
+    start "" "%OUTPUT_DIR%"
+  ) else (
+    echo Results folder not found.
     pause
-    goto RUN_ADVANCED_PYIQA
+  )
+  goto MAIN_MENU
 )
-if /i "%advanced_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
+
+if /i "%routine_choice%"=="3" goto RUN_ROUTINE_SCAN
+
 color %COLOR_MAIN%
 goto MAIN_MENU
 
-:CUSTOM_COMBINATION
+:RUN_CUSTOM_SCAN
 color %COLOR_ANALYSIS%
 cls
 echo.
 echo ╔══════════════════════════════════════════════════════════════╗
-echo ║                    CUSTOM TEST COMBINATION                   ║
+echo ║                     CUSTOM SCAN MODE                         ║
 echo ╚══════════════════════════════════════════════════════════════╝
-echo.
-echo ┌──────────────────────────────────────────────────────────────┐
-echo │                       PROCESSING MODES                       │
-echo └──────────────────────────────────────────────────────────────┘
-echo.
-echo   [1] Parallel Mode    - Run all selected tests (standard)
-echo   [2] Sequential Mode  - Stop on first failure (specs-^>borders-^>watermarks-^>editing-^>text)
-echo   [B] Back to Main Menu
-echo.
-set /p mode_choice="Choose processing mode [1-2, B]: "
-if "%mode_choice%"=="1" set "processing_mode=parallel"
-if "%mode_choice%"=="2" set "processing_mode=sequential"
-if /i "%mode_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-if not defined processing_mode goto CUSTOM_COMBINATION
-
-echo.
-echo ┌──────────────────────────────────────────────────────────────┐
-echo │                    TEST SELECTION METHOD                     │
-echo └──────────────────────────────────────────────────────────────┘
-echo.
-echo   [1] Include Tests    - Select which tests TO RUN
-echo   [2] Exclude Tests    - Select which tests to SKIP
-echo   [B] Back to Main Menu
-echo.
-set /p selection_method="Choose selection method [1-2, B]: "
-if "%selection_method%"=="1" set "method=include"
-if "%selection_method%"=="2" set "method=exclude"
-if /i "%selection_method%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-if not defined method goto CUSTOM_COMBINATION
-
-cls
-echo.
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║                  CUSTOM TEST COMBINATION                     ║
-echo ╚══════════════════════════════════════════════════════════════╝
-echo.
-echo Processing Mode: !processing_mode!
-if "!processing_mode!"=="sequential" (
-    echo Test Order: specifications -^> borders -^> watermarks -^> editing -^> text
-    echo Note: Processing stops on first failure in sequential mode
-)
-echo Selection Method: !method! tests
 echo.
 echo Available Tests:
-echo   [1] specifications - Image format and size validation
-echo   [2] text           - Text detection using PaddleOCR
-echo   [3] borders        - Border and frame detection
-echo   [4] editing        - Image quality and editing detection
-echo   [5] watermarks     - Advanced watermark detection
+echo   [1] Specifications Check (Format/Size validation)
+echo   [2] Border Detection (Artificial borders and frames)
+echo   [3] Watermark Detection (Text and logo watermarks)
+echo   [4] Quality Assessment (PyIQA quality analysis)
 echo.
-if "!method!"=="include" (
-    echo Examples:
-    echo   - "specifications text" for specs + text detection
-    echo   - "borders editing" for borders + quality analysis
-    echo   - "text borders watermarks" for multiple tests
-    echo.
-    set /p custom_tests="Enter test names to RUN (space-separated): "
-) else (
-    echo Examples:
-    echo   - "text" to run all tests EXCEPT text detection
-    echo   - "editing watermarks" to run all EXCEPT editing and watermarks
-    echo   - "specifications borders" to run text, editing, watermarks only
-    echo.
-    set /p excluded_tests="Enter test names to SKIP (space-separated): "
+echo Enter the numbers of tests you want to run separated by spaces.
+echo Example: 1 2 3  (runs specs, border, and watermark tests)
+echo Example: 2 4    (runs border and quality tests only)
+echo.
+set "test_selection="
+set /p test_selection="Enter test numbers: "
+
+if "%test_selection%"=="" (
+    echo No tests selected. Returning to main menu.
+    pause
+    goto MAIN_MENU
 )
 
 echo.
 echo Input Folder:  %INPUT_DIR%
 echo Output Folder: %OUTPUT_DIR%
+echo Selected Tests: %test_selection%
 echo.
-echo [B] Back to main menu
-echo.
-
-REM Handle back option
-if /i "!custom_tests!"=="B" goto MAIN_MENU
-if /i "!excluded_tests!"=="B" goto MAIN_MENU
-
-REM Handle exclude method - convert to include list
-if "!method!"=="exclude" (
-    set "all_tests=specifications text borders editing watermarks"
-    set "custom_tests="
-    
-    REM Build include list by excluding specified tests
-    for %%t in (!all_tests!) do (
-        set "skip_test="
-        for %%e in (!excluded_tests!) do (
-            if /i "%%t"=="%%e" set "skip_test=1"
-        )
-        if not defined skip_test (
-            if defined custom_tests (
-                set "custom_tests=!custom_tests! %%t"
-            ) else (
-                set "custom_tests=%%t"
-            )
-        )
-    )
-    
-    if "!custom_tests!"=="" (
-        echo Error: All tests excluded! At least one test must run.
-        echo Press any key to try again...
-        pause >nul
-        goto CUSTOM_COMBINATION
-    )
-)
-
-REM Validate that we have tests to run
-if "!custom_tests!"=="" (
-    echo Error: No tests specified!
-    echo Press any key to try again...
-    pause >nul
-    goto CUSTOM_COMBINATION
-)
+echo ═══════════════════════════════════════════════════════════════
 
 REM Create output directory if it doesn't exist
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
+echo Starting custom scan with selected tests...
 echo.
-echo ┌──────────────────────────────────────────────────────────────┐
-echo │                    EXECUTION SUMMARY                         │
-echo └──────────────────────────────────────────────────────────────┘
-echo Mode: !processing_mode!
-echo Tests: !custom_tests!
-if "!method!"=="exclude" echo Originally Excluded: !excluded_tests!
-echo.
-echo ═══════════════════════════════════════════════════════════════
+"%PYTHON_PATH%" routine_scan_simple.py --input "%INPUT_DIR%" --output "%OUTPUT_DIR%" --python "%PYTHON_PATH%" --custom "%test_selection%"
 
-REM Run with appropriate mode
-if "!processing_mode!"=="sequential" (
-    echo Running tests in sequential mode ^(stop on first failure^)...
-    "%PYTHON_PATH%" main_optimized.py --tests !custom_tests! --source "%INPUT_DIR%" --output "%OUTPUT_DIR%" --sequential-mode
+if errorlevel 1 (
+    echo.
+    echo ⚠️ Some tests encountered issues but processing completed
+    echo Please check the Results folder for details.
 ) else (
-    echo Running tests in parallel mode ^(run all tests^)...
-    "%PYTHON_PATH%" main_optimized.py --tests !custom_tests! --source "%INPUT_DIR%" --output "%OUTPUT_DIR%"
+    echo.
+    echo ✅ Custom scan completed successfully!
 )
 
+echo ═══════════════════════════════════════════════════════════════
+echo 🎉 CUSTOM SCAN COMPLETED! 🎉
+echo ═══════════════════════════════════════════════════════════════
+echo.
+echo Your selected tests have been completed and results organized.
+echo Check the Results folder to see your organized images!
 echo.
 echo ═══════════════════════════════════════════════════════════════
-echo Custom analysis complete! Check Results folder for output.
+echo Press any key to continue...
+echo ═══════════════════════════════════════════════════════════════
+pause
+goto CUSTOM_POSTMENU
+
+:CUSTOM_POSTMENU
 echo.
 echo [1] Return to Main Menu
 echo [2] View Results Folder
-echo [3] Run Another Custom Analysis
-echo [B] Back to Main Menu
+echo [3] Run Another Custom Scan
 echo.
-set /p custom_complete_choice="Select option [1-3, B]: "
-if "%custom_complete_choice%"=="1" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-if "%custom_complete_choice%"=="2" (
-    start "" "Results" 2>nul
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-if "%custom_complete_choice%"=="3" goto CUSTOM_COMBINATION
-if /i "%custom_complete_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-color %COLOR_MAIN%
-goto MAIN_MENU
+set "custom_choice="
+set /p custom_choice="Select option [1-3]: "
 
-:SYSTEM_INFO
-color %COLOR_INFO%
-cls
-echo.
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║             SYSTEM INFORMATION ^& DIAGNOSTICS                ║
-echo ╚══════════════════════════════════════════════════════════════╝
-echo.
-echo System Information:
-echo ═══════════════════
-echo Computer: %COMPUTERNAME%
-echo User: %USERNAME%
-echo Date: %DATE%
-echo Time: %TIME%
-echo OS: %OS%
-echo.
-echo Python Environment:
-echo ═════════════════════
-"%PYTHON_PATH%" --version 2>nul && (
-    echo [OK] Python is installed
-    "%PYTHON_PATH%" -c "import cv2; print('[OK] OpenCV version:', cv2.__version__)" 2>nul || echo [ERROR] OpenCV not available
-    "%PYTHON_PATH%" -c "import paddleocr; print('[OK] PaddleOCR is available')" 2>nul || echo [ERROR] PaddleOCR not available
-    "%PYTHON_PATH%" -c "import torch; print('[OK] PyTorch version:', torch.__version__)" 2>nul || echo [ERROR] PyTorch not available
-    "%PYTHON_PATH%" -c "import numpy; print('[OK] NumPy version:', numpy.__version__)" 2>nul || echo [ERROR] NumPy not available
-) || (
-    echo [ERROR] Python is not installed or not in PATH
-)
-echo.
-echo Project Structure:
-echo ════════════════════
-if exist "main_optimized.py" (
-    echo [OK] Main pipeline: main_optimized.py
-) else (
-    echo [ERROR] Main pipeline: main_optimized.py not found
-)
-if exist "border_detector.py" (
-    echo [OK] Border detector: border_detector.py
-) else (
-    echo [ERROR] Border detector: border_detector.py not found
-)
-if exist "advanced_watermark_detector.py" (
-    echo [OK] Watermark detector: advanced_watermark_detector.py
-) else (
-    echo [ERROR] Watermark detector: advanced_watermark_detector.py not found
-)
-if exist "photos4testing" (
-    echo [OK] Test images directory: photos4testing
-) else (
-    echo [ERROR] Test images directory: photos4testing not found
-)
-echo.
-echo [B] Back to Main Menu
-echo.
-set /p sys_choice="Press B to return to main menu or any other key to continue: "
-if /i "%sys_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-color %COLOR_MAIN%
-goto MAIN_MENU
+if /i "%custom_choice%"=="1" goto MAIN_MENU
 
-:VIEW_REPORTS
-color %COLOR_INFO%
-cls
-echo.
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║                       ANALYSIS REPORTS                       ║
-echo ╚══════════════════════════════════════════════════════════════╝
-echo.
-echo Available Reports:
-echo ═══════════════════
-echo.
-if exist "Results" (
-    echo Results Directory:
-    dir /b "Results" 2>nul
-    echo.
+if /i "%custom_choice%"=="2" (
+  if exist "%OUTPUT_DIR%" (
+    start "" "%OUTPUT_DIR%"
+  ) else (
+    echo Results folder not found.
+    pause
+  )
+  goto MAIN_MENU
 )
-if exist "FrameDetectionResults" (
-    echo Border Detection Results:
-    dir /b "FrameDetectionResults" 2>nul
-    echo.
-)
-if exist "CODE_QUALITY_ISSUES.md" (
-    echo Code Quality Report: CODE_QUALITY_ISSUES.md
-    echo.
-)
-if exist "*.json" (
-    echo JSON Reports:
-    dir /b "*.json" 2>nul
-    echo.
-)
-echo [1] Open Results folder
-echo [2] View latest processing log
-echo [3] Open code quality report
-echo [B] Back to main menu
-echo.
-set /p report_choice="Select option: "
-if "%report_choice%"=="1" start "" "Results" 2>nul
-if "%report_choice%"=="2" (
-    if exist "Results\logs" (
-        dir /b /o:d "Results\logs\*.log" 2>nul | findstr /r ".*" >nul && (
-            for /f %%i in ('dir /b /o:d "Results\logs\*.log"') do set latest_log=%%i
-            start notepad "Results\logs\!latest_log!"
-        ) || echo No log files found.
-    ) else echo No logs directory found.
-)
-if "%report_choice%"=="3" start notepad "CODE_QUALITY_ISSUES.md" 2>nul
-if /i "%report_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-echo.
-echo [B] Back to Main Menu
-echo.
-set /p back_choice="Press B to return to main menu or any other key to continue: "
-if /i "%back_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
+
+if /i "%custom_choice%"=="3" goto RUN_CUSTOM_SCAN
+
 color %COLOR_MAIN%
 goto MAIN_MENU
 
@@ -1149,151 +853,11 @@ echo ╔════════════════════════
 echo ║                       INVALID SELECTION                      ║
 echo ╚══════════════════════════════════════════════════════════════╝
 echo.
-echo The option you selected is not valid.
-echo Please choose from the available options (1-9, P).
+echo Please choose from the available options.
 echo.
-echo [B] Back to Main Menu
-echo.
-set /p invalid_choice="Press B to return to main menu or any other key to continue: "
-if /i "%invalid_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
+pause
 color %COLOR_MAIN%
 goto MAIN_MENU
-
-:MODEL_CACHE_MANAGEMENT
-color %COLOR_CONFIG%
-cls
-echo.
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║                   MODEL CACHE MANAGEMENT                     ║
-echo ╚══════════════════════════════════════════════════════════════╝
-echo.
-echo Model caching improves performance by keeping AI models loaded
-echo between runs, reducing startup time from ~30s to ~5s.
-echo.
-echo ┌──────────────────────────────────────────────────────────────┐
-echo │                         OPTIONS                              │
-echo └──────────────────────────────────────────────────────────────┘
-echo.
-echo   [1] Warm Cache (Pre-load Models)     
-echo   [2] Clear Model Cache                
-echo   [3] Check Cache Status               
-echo   [4] Optimize for Speed               
-echo   [5] Optimize for Memory              
-echo   [B] Back to Main Menu
-echo.
-echo ═══════════════════════════════════════════════════════════════
-set /p cache_choice="Select an option: "
-
-if "%cache_choice%"=="1" goto WARM_CACHE
-if "%cache_choice%"=="2" goto CLEAR_CACHE
-if "%cache_choice%"=="3" goto CHECK_CACHE_STATUS
-if "%cache_choice%"=="4" goto OPTIMIZE_SPEED
-if "%cache_choice%"=="5" goto OPTIMIZE_MEMORY
-if /i "%cache_choice%"=="B" (
-    color %COLOR_MAIN%
-    goto MAIN_MENU
-)
-goto MODEL_CACHE_MANAGEMENT
-
-:WARM_CACHE
-echo.
-echo Warming up model cache...
-echo This will pre-load AI models for faster subsequent runs.
-if "%USE_GPU%"=="true" (
-    echo Using GPU acceleration: GPU %GPU_ID%
-) else (
-    echo Using CPU processing
-)
-echo.
-"%PYTHON_PATH%" model_cache_optimizer.py --warm-cache %GPU_FLAGS%
-echo.
-echo [B] Back to Cache Management
-echo.
-set /p back_choice="Press B to go back or any other key to continue: "
-if /i "%back_choice%"=="B" goto MODEL_CACHE_MANAGEMENT
-pause
-goto MODEL_CACHE_MANAGEMENT
-
-:CLEAR_CACHE
-echo.
-echo Clearing model cache...
-echo This will free up disk space but slow down the next run.
-echo.
-"%PYTHON_PATH%" model_cache_optimizer.py --clear-cache
-echo.
-echo [B] Back to Cache Management
-echo.
-set /p back_choice="Press B to go back or any other key to continue: "
-if /i "%back_choice%"=="B" goto MODEL_CACHE_MANAGEMENT
-pause
-goto MODEL_CACHE_MANAGEMENT
-
-:CHECK_CACHE_STATUS
-echo.
-echo Checking cache status...
-echo.
-if exist "%TEMP%\photovalidator_cache\model_cache.pkl" (
-    echo ✅ Model cache exists
-    for %%f in ("%TEMP%\photovalidator_cache\model_cache.pkl") do (
-        echo    Size: %%~zf bytes
-        echo    Modified: %%~tf
-    )
-) else (
-    echo ❌ No model cache found
-    echo    First run will be slower as models load from scratch
-)
-echo.
-echo [B] Back to Cache Management
-echo.
-set /p back_choice="Press B to go back or any other key to continue: "
-if /i "%back_choice%"=="B" goto MODEL_CACHE_MANAGEMENT
-pause
-goto MODEL_CACHE_MANAGEMENT
-
-:OPTIMIZE_SPEED
-echo.
-echo Optimizing for maximum speed...
-echo - Enabling model caching
-echo - Pre-loading essential models
-if "%USE_GPU%"=="true" (
-    echo - Using GPU acceleration: GPU %GPU_ID%
-) else (
-    echo - Using CPU for consistent performance
-)
-echo.
-"%PYTHON_PATH%" model_cache_optimizer.py --warm-cache %GPU_FLAGS%
-echo.
-echo Speed optimization complete!
-echo Next analysis runs will be significantly faster.
-echo.
-echo [B] Back to Cache Management
-echo.
-set /p back_choice="Press B to go back or any other key to continue: "
-if /i "%back_choice%"=="B" goto MODEL_CACHE_MANAGEMENT
-pause
-goto MODEL_CACHE_MANAGEMENT
-
-:OPTIMIZE_MEMORY
-echo.
-echo Optimizing for memory usage...
-echo - Clearing cached models
-echo - Models will load on-demand
-echo - Slower but uses less memory
-echo.
-"%PYTHON_PATH%" model_cache_optimizer.py --clear-cache
-echo.
-echo Memory optimization complete!
-echo System will use minimal memory but runs may be slower.
-echo.
-echo [B] Back to Cache Management
-echo.
-set /p back_choice="Press B to go back or any other key to continue: "
-if /i "%back_choice%"=="B" goto MODEL_CACHE_MANAGEMENT
-pause
-goto MODEL_CACHE_MANAGEMENT
 
 :GPU_CONFIGURATION
 color %COLOR_CONFIG%
@@ -1399,7 +963,7 @@ if errorlevel 1 (
 )
 
 set "GPU_ID=%new_gpu_id%"
-if "%USE_GPU%"=="true" (
+if /i "%USE_GPU%"=="true" (
     set "GPU_FLAGS=--gpu=%GPU_ID%"
 ) else (
     set "GPU_FLAGS=--cpu"
@@ -1480,52 +1044,26 @@ echo ╔════════════════════════
 echo ║                    SYSTEM VALIDATION                         ║
 echo ╚══════════════════════════════════════════════════════════════╝
 echo.
-echo Validating system requirements...
+echo Checking system requirements...
 echo.
 
 set "validation_failed=0"
 
 REM Check Python
-echo [1/5] Checking Python installation...
+echo [1/4] Checking Python installation...
 "%PYTHON_PATH%" --version >nul 2>&1
 if errorlevel 1 (
-    echo ❌ Python not found at: %PYTHON_PATH%
-    echo    Please configure Python path in settings.
+    echo ❌ Python not accessible
+    echo    Please check Python configuration in settings.
     set "validation_failed=1"
 ) else (
     for /f "tokens=*" %%i in ('"%PYTHON_PATH%" --version 2^>^&1') do echo ✅ %%i
 )
 
-REM Check core dependencies
-echo [2/5] Checking Python dependencies...
-"%PYTHON_PATH%" -c "import sys; print('Python', sys.version.split()[0])" >nul 2>&1
-if errorlevel 1 (
-    echo ❌ Python interpreter error
-    set "validation_failed=1"
-) else (
-    echo ✅ Python interpreter: OK
-)
-
-"%PYTHON_PATH%" -c "import numpy; print('NumPy:', numpy.__version__)" 2>nul
-if errorlevel 1 (
-    echo ❌ NumPy not available
-    set "validation_failed=1"
-) else (
-    echo ✅ NumPy: Available
-)
-
-"%PYTHON_PATH%" -c "import PIL; print('Pillow:', PIL.__version__)" 2>nul
-if errorlevel 1 (
-    echo ❌ Pillow not available
-    set "validation_failed=1"
-) else (
-    echo ✅ Pillow: Available
-)
-
 REM Check directories
-echo [3/5] Checking directories...
+echo [2/4] Checking input directory...
 if not exist "%INPUT_DIR%" (
-    echo ❌ Input directory does not exist: %INPUT_DIR%
+    echo ❌ Input directory not found: %INPUT_DIR%
     set "validation_failed=1"
 ) else (
     echo ✅ Input Directory: %INPUT_DIR%
@@ -1539,7 +1077,7 @@ if not exist "%INPUT_DIR%" (
 )
 
 REM Check output directory writability
-echo [4/5] Checking output directory access...
+echo [3/4] Checking output directory access...
 if not exist "%OUTPUT_DIR%" (
     mkdir "%OUTPUT_DIR%" 2>nul
     if errorlevel 1 (
@@ -1550,23 +1088,15 @@ if not exist "%OUTPUT_DIR%" (
         rmdir "%OUTPUT_DIR%" 2>nul
     )
 ) else (
-    echo ✅ Output Directory: %OUTPUT_DIR% (exists)
-    echo test > "%OUTPUT_DIR%\write_test.tmp" 2>nul
-    if errorlevel 1 (
-        echo ❌ Output directory is not writable
-        set "validation_failed=1"
-    ) else (
-        echo    └─ Write access: OK
-        del "%OUTPUT_DIR%\write_test.tmp" 2>nul
-    )
+    echo ✅ Output Directory: %OUTPUT_DIR%
 )
 
 REM Check main script
-echo [5/5] Checking main script...
+echo [4/4] Checking analysis scripts...
 if exist "main_optimized.py" (
-    echo ✅ Main script: main_optimized.py found
+    echo ✅ Analysis scripts found
 ) else (
-    echo ❌ Main script: main_optimized.py not found
+    echo ❌ Analysis scripts missing
     set "validation_failed=1"
 )
 
@@ -1576,24 +1106,18 @@ if "%validation_failed%"=="1" (
     echo ❌ VALIDATION FAILED
     echo    Please fix the issues above before running analysis.
     echo.
-    echo [C] Continue anyway (may fail)
-    echo [S] Go to Settings
-    echo [B] Back to main menu
+    echo [C] Continue anyway
+    echo [S] Go to Settings  
     echo.
-    choice /c CSB /m "Select option"
-    if errorlevel 3 (
-        color %COLOR_MAIN%
-        goto MAIN_MENU
-    )
+    choice /c CS /m "Select option"
     if errorlevel 2 (
         color %COLOR_CONFIG%
         goto CONFIGURE_PATHS
     )
-    REM Continue anyway if errorlevel 1
     color %COLOR_ANALYSIS%
 ) else (
     echo ✅ SYSTEM VALIDATION COMPLETE
-    echo    All requirements met. Ready for analysis.
+    echo    Ready for image analysis.
     echo.
 )
 goto :EOF
@@ -1678,3 +1202,323 @@ if errorlevel 1 (
     call :LOG_EVENT "Operation completed successfully: %~2"
 )
 goto :EOF
+
+REM ═══════════════════════════════════════════════════════════════════════════
+REM ROUTINE SCAN FUNCTIONS FOR ORGANIZED RESULTS
+REM ═══════════════════════════════════════════════════════════════════════════
+
+:INITIALIZE_ROUTINE_SCAN
+echo Initializing folder structure...
+
+REM Clean folders from previous runs
+for %%D in ("Valid" "Invalid" "ManualReview" "valid" "invalid" "manualreview") do (
+  if exist "%OUTPUT_DIR%\%%~D" rmdir /s /q "%OUTPUT_DIR%\%%~D" 2>nul
+)
+
+REM Clean staging folders from previous runs
+for %%D in ("Invalid\_spec_failures" "Invalid\_border_failures" "Invalid\_watermark_failures" "Invalid\_quality_failures") do (
+  if exist "%OUTPUT_DIR%\%%~D" rmdir /s /q "%OUTPUT_DIR%\%%~D" 2>nul
+)
+
+REM Create timestamp for this scan session
+set "SCAN_TIMESTAMP=%DATE:~-4,4%-%DATE:~-10,2%-%DATE:~-7,2%_%TIME:~0,2%-%TIME:~3,2%-%TIME:~6,2%"
+set "SCAN_TIMESTAMP=%SCAN_TIMESTAMP: =0%"
+
+REM Create organized folder structure with subcategories
+if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+mkdir "%OUTPUT_DIR%\Valid"
+mkdir "%OUTPUT_DIR%\Invalid"
+mkdir "%OUTPUT_DIR%\ManualReview"
+mkdir "%OUTPUT_DIR%\Reports"
+mkdir "%OUTPUT_DIR%\logs"
+
+REM Create staging folders for each test type INSIDE the Invalid directory
+mkdir "%OUTPUT_DIR%\Invalid\_spec_failures"
+mkdir "%OUTPUT_DIR%\Invalid\_border_failures"
+mkdir "%OUTPUT_DIR%\Invalid\_watermark_failures"
+mkdir "%OUTPUT_DIR%\Invalid\_quality_failures"
+
+REM Initialize scan log
+set "ROUTINE_LOG=%OUTPUT_DIR%\Reports\Routine_Scan_Log_%SCAN_TIMESTAMP%.txt"
+echo =============================================================================== > "%ROUTINE_LOG%"
+echo                    PHOTOVALIDATOR ROUTINE SCAN LOG                           >> "%ROUTINE_LOG%"
+echo =============================================================================== >> "%ROUTINE_LOG%"
+echo Scan Started: %DATE% %TIME% >> "%ROUTINE_LOG%"
+echo User: %USERNAME% >> "%ROUTINE_LOG%"
+echo Computer: %COMPUTERNAME% >> "%ROUTINE_LOG%"
+echo Input Directory: %INPUT_DIR% >> "%ROUTINE_LOG%"
+echo Output Directory: %OUTPUT_DIR% >> "%ROUTINE_LOG%"
+echo Python Path: %PYTHON_PATH% >> "%ROUTINE_LOG%"
+echo GPU Enabled: %USE_GPU% >> "%ROUTINE_LOG%"
+echo =============================================================================== >> "%ROUTINE_LOG%"
+echo. >> "%ROUTINE_LOG%"
+
+REM Initialize excluded files tracking
+set "EXCLUDED_FILES_LIST=%OUTPUT_DIR%\logs\excluded_files.txt"
+if exist "%EXCLUDED_FILES_LIST%" del "%EXCLUDED_FILES_LIST%" 2>nul
+
+echo ✅ Folder structure initialized
+echo ✅ Scan log created: %ROUTINE_LOG%
+echo ✅ Exclusion tracking initialized
+echo.
+goto :EOF
+
+:PROCESS_TEST_RESULTS
+REM Usage: call :PROCESS_TEST_RESULTS "temp_folder_name" "failure_folder_name" "test_name"
+setlocal EnableDelayedExpansion
+set "temp_folder=%~1"
+set "failure_folder=%~2"
+set "test_name=%~3"
+
+echo Processing %test_name% test results...
+
+REM Ensure target directories exist
+if not exist "%OUTPUT_DIR%\Invalid\%failure_folder%" mkdir "%OUTPUT_DIR%\Invalid\%failure_folder%" 2>nul
+if not exist "%OUTPUT_DIR%\ManualReview" mkdir "%OUTPUT_DIR%\ManualReview" 2>nul
+
+REM Process invalid results
+if exist "%OUTPUT_DIR%\%temp_folder%\invalid\*.*" (
+    echo Moving invalid results from %test_name% test...
+    for %%F in ("%OUTPUT_DIR%\%temp_folder%\invalid\*.*") do (
+        copy "%%F" "%OUTPUT_DIR%\Invalid\%failure_folder%\" >nul 2>&1
+        echo %%~nxF>>"%EXCLUDED_FILES_LIST%"
+        echo ✗ %%~nxF → Invalid\%failure_folder%
+    )
+)
+
+REM Process manual review results
+if exist "%OUTPUT_DIR%\%temp_folder%\manualreview\*.*" (
+    echo Moving manual review results from %test_name% test...
+    for %%F in ("%OUTPUT_DIR%\%temp_folder%\manualreview\*.*") do (
+        copy "%%F" "%OUTPUT_DIR%\ManualReview\" >nul 2>&1
+        echo %%~nxF>>"%EXCLUDED_FILES_LIST%"
+        echo ? %%~nxF → ManualReview
+    )
+)
+
+REM Clean up temporary folder
+rmdir /s /q "%OUTPUT_DIR%\%temp_folder%" 2>nul
+
+echo ✅ %test_name% results processed
+endlocal
+goto :EOF
+
+:PROCESS_PYIQA_RESULTS
+setlocal EnableDelayedExpansion
+echo Processing PyIQA quality test results...
+
+REM Ensure target directories exist
+if not exist "%OUTPUT_DIR%\Invalid\_quality_failures" mkdir "%OUTPUT_DIR%\Invalid\_quality_failures" 2>nul
+if not exist "%OUTPUT_DIR%\ManualReview" mkdir "%OUTPUT_DIR%\ManualReview" 2>nul
+
+REM Process invalid results from PyIQA default Results folder
+if exist "Results\invalid\*.*" (
+    echo Moving invalid results from quality test...
+    for %%F in ("Results\invalid\*.*") do (
+        copy "%%F" "%OUTPUT_DIR%\Invalid\_quality_failures\" >nul 2>&1
+        echo %%~nxF>>"%EXCLUDED_FILES_LIST%"
+        echo ✗ %%~nxF → Invalid\_quality_failures
+    )
+)
+
+REM Process manual review results from PyIQA
+if exist "Results\manualreview\*.*" (
+    echo Moving manual review results from quality test...
+    for %%F in ("Results\manualreview\*.*") do (
+        copy "%%F" "%OUTPUT_DIR%\ManualReview\" >nul 2>&1
+        echo %%~nxF>>"%EXCLUDED_FILES_LIST%"
+        echo ? %%~nxF → ManualReview
+    )
+)
+
+REM Try to extract invalid filenames from PyIQA logs if images weren't copied
+if exist "Results\logs\pyiqa_scores.txt" (
+    echo Checking PyIQA log for additional invalid files...
+    for /f "tokens=1 delims=," %%F in ('findstr /i "score_above" "Results\logs\pyiqa_scores.txt" 2^>nul') do (
+        if exist "%INPUT_DIR%\%%F" (
+            if not exist "%OUTPUT_DIR%\Invalid\_quality_failures\%%F" (
+                echo Copying %%F to quality_failures from log analysis
+                copy "%INPUT_DIR%\%%F" "%OUTPUT_DIR%\Invalid\_quality_failures\" >nul 2>&1
+                echo %%F>>"%EXCLUDED_FILES_LIST%"
+                echo ✗ %%F → Invalid\_quality_failures ^(from logs^)
+            )
+        )
+    )
+)
+
+REM Copy logs if present
+if exist "Results\logs" (
+    echo Copying PyIQA logs...
+    if not exist "%OUTPUT_DIR%\logs" mkdir "%OUTPUT_DIR%\logs" 2>nul
+    xcopy "Results\logs\*" "%OUTPUT_DIR%\logs\" /e /i /y >nul 2>&1
+)
+
+REM Clean PyIQA default output
+if exist "Results" rmdir /s /q "Results" 2>nul
+
+echo ✅ PyIQA results processed
+endlocal
+goto :EOF
+
+:LOG_ROUTINE_EVENT
+REM Log events to scan log
+if defined ROUTINE_LOG (
+    echo %TIME% - %~1 >> "%ROUTINE_LOG%"
+)
+goto :EOF
+
+:ORGANIZE_ROUTINE_RESULTS
+setlocal EnableDelayedExpansion
+echo Organizing results into final categorized structure...
+
+REM Ensure required folders exist
+if not exist "%OUTPUT_DIR%\Valid" mkdir "%OUTPUT_DIR%\Valid" 2>nul
+if not exist "%OUTPUT_DIR%\Invalid" mkdir "%OUTPUT_DIR%\Invalid" 2>nul
+if not exist "%OUTPUT_DIR%\ManualReview" mkdir "%OUTPUT_DIR%\ManualReview" 2>nul
+
+REM Load excluded files list into memory for faster checking
+set "excluded_count=0"
+if exist "%EXCLUDED_FILES_LIST%" (
+    for /f "usebackq delims=" %%F in ("%EXCLUDED_FILES_LIST%") do (
+        set /a excluded_count+=1
+        set "excluded[!excluded_count!]=%%F"
+    )
+)
+
+echo Found !excluded_count! files excluded from previous tests
+
+REM Build Valid folder by copying any input image that is NOT in the excluded list
+echo Determining images that passed all tests...
+set "valid_count=0"
+for %%G in ("%INPUT_DIR%\*.jpg" "%INPUT_DIR%\*.jpeg" "%INPUT_DIR%\*.png" "%INPUT_DIR%\*.bmp" "%INPUT_DIR%\*.tif" "%INPUT_DIR%\*.tiff") do (
+  if exist "%%~fG" (
+    set "fn=%%~nxG"
+    set "is_excluded=false"
+    
+    REM Check if this file is in the excluded list
+    for /l %%i in (1,1,!excluded_count!) do (
+        if "!fn!"=="!excluded[%%i]!" (
+            set "is_excluded=true"
+            goto :next_file
+        )
+    )
+    
+    :next_file
+    if "!is_excluded!"=="false" (
+        copy "%%~fG" "%OUTPUT_DIR%\Valid\" >nul 2>&1
+        set /a valid_count+=1
+        echo ✓ !fn! → Valid
+    ) else (
+        echo - !fn! → Excluded ^(failed one or more tests^)
+    )
+  )
+)
+
+echo.
+echo ✅ Results organization completed:
+echo ├─ Valid: !valid_count! images that passed ALL tests
+echo ├─ Invalid: Contains subcategories for different failure types
+echo └─ ManualReview: Images requiring human verification
+
+REM Show summary of invalid categories
+echo.
+echo Invalid Categories Summary:
+for %%D in ("_spec_failures" "_border_failures" "_watermark_failures" "_quality_failures") do (
+    set "cat_count=0"
+    if exist "%OUTPUT_DIR%\Invalid\%%~D" (
+        for /f %%c in ('dir /a-d /b "%OUTPUT_DIR%\Invalid\%%~D\*" 2^>nul ^| find /c /v ""') do set "cat_count=%%c"
+    )
+    echo ├─ %%~D: !cat_count! files
+)
+
+set "manual_count=0"
+if exist "%OUTPUT_DIR%\ManualReview" (
+    for /f %%c in ('dir /a-d /b "%OUTPUT_DIR%\ManualReview\*" 2^>nul ^| find /c /v ""') do set "manual_count=%%c"
+)
+echo └─ ManualReview: !manual_count! files
+
+endlocal & exit /b 0
+
+:GENERATE_RESULTS_REPORT
+setlocal EnableDelayedExpansion
+echo Generating comprehensive Results Report...
+set "RESULTS_REPORT=%OUTPUT_DIR%\Reports\Results_Report.txt"
+if not exist "%OUTPUT_DIR%\Reports" mkdir "%OUTPUT_DIR%\Reports" 2>nul
+
+(
+echo ===============================================================================
+echo RESULTS REPORT
+echo PHOTOVALIDATOR ROUTINE SCAN
+echo ===============================================================================
+echo.
+echo SCAN INFORMATION:
+echo Date/Time: %DATE% %TIME%
+echo Operator: %USERNAME%
+echo Source Directory: %INPUT_DIR%
+echo Output Directory: %OUTPUT_DIR%
+echo.
+) > "%RESULTS_REPORT%"
+
+REM Count total input files safely
+set "TOTAL_INPUT=0"
+for /f %%c in ('dir /a-d /b "%INPUT_DIR%\*.jpg" "%INPUT_DIR%\*.jpeg" "%INPUT_DIR%\*.png" "%INPUT_DIR%\*.bmp" "%INPUT_DIR%\*.tif" "%INPUT_DIR%\*.tiff" 2^>nul ^| find /c /v ""') do set "TOTAL_INPUT=%%c"
+
+REM Count Valid
+set "VALID_COUNT=0"
+if exist "%OUTPUT_DIR%\Valid" (
+  for /f %%c in ('dir /a-d /b "%OUTPUT_DIR%\Valid\*" 2^>nul ^| find /c /v ""') do set "VALID_COUNT=%%c"
+)
+
+REM Count ManualReview
+set "MANUAL_COUNT=0"
+if exist "%OUTPUT_DIR%\ManualReview" (
+  for /f %%c in ('dir /a-d /b "%OUTPUT_DIR%\ManualReview\*" 2^>nul ^| find /c /v ""') do set "MANUAL_COUNT=%%c"
+)
+
+REM Count category failures
+for %%# in (SPECS BORDER WATERMARK QUALITY) do set "%%#_COUNT=0"
+if exist "%OUTPUT_DIR%\Invalid\_spec_failures" for /f %%c in ('dir /a-d /b "%OUTPUT_DIR%\Invalid\_spec_failures\*" 2^>nul ^| find /c /v ""') do set "SPECS_COUNT=%%c"
+if exist "%OUTPUT_DIR%\Invalid\_border_failures" for /f %%c in ('dir /a-d /b "%OUTPUT_DIR%\Invalid\_border_failures\*" 2^nul ^| find /c /v ""') do set "BORDER_COUNT=%%c"
+if exist "%OUTPUT_DIR%\Invalid\_watermark_failures" for /f %%c in ('dir /a-d /b "%OUTPUT_DIR%\Invalid\_watermark_failures\*" 2^>nul ^| find /c /v ""') do set "WATERMARK_COUNT=%%c"
+if exist "%OUTPUT_DIR%\Invalid\_quality_failures" for /f %%c in ('dir /a-d /b "%OUTPUT_DIR%\Invalid\_quality_failures\*" 2^>nul ^| find /c /v ""') do set "QUALITY_COUNT=%%c"
+
+REM Compute unique invalids
+set "UNIQUE_INVALID_COUNT=0"
+set "temp_list=%OUTPUT_DIR%\temp_invalid_list.txt"
+set "temp_sorted=%OUTPUT_DIR%\temp_sorted.txt"
+if exist "%temp_list%" del "%temp_list%" 2>nul
+if exist "%temp_sorted%" del "%temp_sorted%" 2>nul
+for %%F in ("%OUTPUT_DIR%\Invalid\_spec_failures\*.*") do if exist "%%~fF" echo %%~nxF>>"%temp_list%"
+for %%F in ("%OUTPUT_DIR%\Invalid\_border_failures\*.*") do if exist "%%~fF" echo %%~nxF>>"%temp_list%"
+for %%F in ("%OUTPUT_DIR%\Invalid\_watermark_failures\*.*") do if exist "%%~fF" echo %%~nxF>>"%temp_list%"
+for %%F in ("%OUTPUT_DIR%\Invalid\_quality_failures\*.*") do if exist "%%~fF" echo %%~nxF>>"%temp_list%"
+if exist "%temp_list%" (
+  sort "%temp_list%" > "%temp_sorted%" 2>nul
+  for /f %%C in ('findstr /r "." "%temp_sorted%" 2^>nul ^| find /c /v ""') do set "UNIQUE_INVALID_COUNT=%%C"
+  del "%temp_list%" 2>nul
+  del "%temp_sorted%" 2>nul
+)
+
+REM Write summary
+>>"%RESULTS_REPORT%" echo SUMMARY:
+>>"%RESULTS_REPORT%" echo Total Images Processed: !TOTAL_INPUT!
+>>"%RESULTS_REPORT%" echo Images Passed All Tests: !VALID_COUNT!
+>>"%RESULTS_REPORT%" echo Images Failed Tests ^(unique count^): !UNIQUE_INVALID_COUNT!
+>>"%RESULTS_REPORT%" echo ├─ Specifications Issues: !SPECS_COUNT!
+>>"%RESULTS_REPORT%" echo ├─ Border Detection Issues: !BORDER_COUNT!
+>>"%RESULTS_REPORT%" echo ├─ Watermark Detection Issues: !WATERMARK_COUNT!
+>>"%RESULTS_REPORT%" echo ├─ Quality Issues: !QUALITY_COUNT!
+>>"%RESULTS_REPORT%" echo Images Needing Manual Review: !MANUAL_COUNT!
+>>"%RESULTS_REPORT%" echo.
+
+set /a SUCCESS_RATE=0
+if !TOTAL_INPUT! gtr 0 set /a SUCCESS_RATE=(!VALID_COUNT!*100)/!TOTAL_INPUT!
+>>"%RESULTS_REPORT%" echo Overall Success Rate: !SUCCESS_RATE!%%
+>>"%RESULTS_REPORT%" echo.
+
+call :LOG_ROUTINE_EVENT "Results Report generated: %RESULTS_REPORT%"
+echo ✅ Results Report generated: %RESULTS_REPORT%
+echo ✅ Success Rate: !SUCCESS_RATE!%%
+echo.
+
+endlocal & exit /b 0
