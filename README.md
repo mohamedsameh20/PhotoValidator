@@ -1,443 +1,316 @@
-# PhotoValidator - Advanced Image Processing Pipeline
+# PhotoValidator - Smart Image Validation Made Simple
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![OpenCV](https://img.shields.io/badge/OpenCV-4.8+-green.svg)](https://opencv.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![PaddleOCR](https://img.shields.io/badge/PaddleOCR-2.7+-orange.svg)](https://github.com/PaddlePaddle/PaddleOCR)
+[![Windows Compatible](https://img.shields.io/badge/Windows-Compatible-blue.svg)](https://www.microsoft.com/windows)
 
-## 🎯 Overview
+## 🎯 What is PhotoValidator?
 
-PhotoValidator is a comprehensive, high-performance image processing and filtering system designed for professional image validation, quality assessment, and automated sorting. The system combines state-of-the-art machine learning models with advanced computer vision techniques to detect artificial editing, watermarks, text overlays, and image quality issues.
+PhotoValidator is an **all-in-one image validation system** that automatically sorts your images into organized folders based on quality, authenticity, and professional standards. Whether you're processing hundreds of photos for a project or validating image collections, PhotoValidator does the heavy lifting for you.
 
-### Key Features
-- **🚀 True Parallel Processing**: Multi-threaded execution with ThreadPoolExecutor for maximum performance
-- **📱 Interactive Batch Interface**: User-friendly `PhotoValidator.bat` for Windows with comprehensive test options
-- **🔍 Text Detection**: State-of-the-art PaddleOCR with DB (Differentiable Binarization) model
-- **🏷️ Watermark Detection**: CNN-based watermark identification using ConvNeXt architecture
+**✨ Perfect for:**
+- **Content creators** validating image collections
+- **Digital agencies** processing client assets  
+- **E-commerce teams** ensuring product image quality
+- **Anyone** who needs to quickly sort and validate large image sets
+
+## 🚀 Quick Start - Routine Scan (Recommended)
+
+**The Routine Scan is our flagship feature** - it's the easiest and most comprehensive way to validate your images. Simply:
+
+1. **Place your images** in the `photos4testing` folder
+2. **Double-click** `PhotoValidator.bat` 
+3. **Select option [1] Routine Scan**
+4. **Let it run** - your images will be automatically organized!
+
+### Why Routine Scan is the Best Choice:
+
+- 🎯 **Complete validation** - runs all tests in the optimal sequence
+- 🔄 **Smart organization** - automatically sorts results into clear folders
+- 🚀 **One-click operation** - no complex setup or configuration needed
+- 📊 **User-friendly output** - clear progress and easy-to-understand results
+- ⚡ **Optimized performance** - uses the best settings for speed and accuracy
+
+### What Routine Scan Checks:
+
+| Test | What it Detects | Why it Matters |
+|------|----------------|----------------|
+| **� Specifications** | Image format, size, resolution | Ensures compatibility and standards compliance |
+| **�️ Border Detection** | Artificial borders, frames, decorative edges | Identifies processed or edited images |
+| **🏷️ Watermark Detection** | Text overlays, logos, copyright marks | Prevents copyright issues |
+| **⚡ Quality Assessment** | Compression artifacts, editing signs | Maintains professional image quality |
+
+### Your Results, Organized:
+
+After Routine Scan completes, your images are automatically sorted into:
+
+```
+� Results/
+├── ✅ Valid/                    - Clean, professional images ready to use
+├── ❌ Invalid/
+│   ├── Specifications/         - Format or size issues  
+│   ├── Border/                 - Images with borders or frames
+│   ├── Watermark/              - Images with watermarks detected
+│   └── Quality/                - Images with quality issues
+├── 🔍 ManualReview/            - Images needing your review
+└── 📋 logs/                    - Detailed processing reports
+```
+
+---
+
+## 🎮 User Guide - Getting Started
+
+### Step 1: Setup (One-time only)
+
+1. **Download** PhotoValidator to any folder
+2. **Create** a `photos4testing` folder in the same location
+3. **Install Python** if not already installed (the system will guide you)
+
+### Step 2: Using Routine Scan
+
+1. **Add your images** to the `photos4testing` folder
+2. **Double-click** `PhotoValidator.bat`
+3. **Select [1] Routine Scan** from the menu
+4. **Wait** for processing to complete (progress is shown)
+5. **Check the Results folder** - your images are now organized!
+
+### Alternative Options
+
+If you need specific testing only:
+
+- **[2] Custom Scan** - Pick which tests to run (e.g., just watermark detection)
+- **[3] Text Detection Only** - Find images with text overlays
+- **[4] Border Detection** - Identify images with borders or frames
+- **[5] Quality Detection** - Check for editing and compression issues
+- **[6] Watermark Detection** - Find copyright marks and logos
+- **[7] Specifications Check** - Validate format and size requirements
+
+---
+
+## 📊 Understanding Your Results
+
+### Validation Categories Explained:
+
+**✅ Valid Images**
+- Passed all quality checks
+- No watermarks or borders detected  
+- Proper format and specifications
+- Ready for professional use
+
+**❌ Invalid Images**
+- Failed one or more validation tests
+- Organized by specific issue type
+- Review each category to understand problems
+
+**🔍 Manual Review**
+- Borderline cases requiring human judgment
+- May have minor issues worth checking
+- Use your discretion for final decisions
+
+### Reading the Output:
+
+During processing, you'll see:
+```
+[STEP 1/5] Running Image Specifications Check...
+✅ Specifications completed successfully
+✗ image1.jpg → Invalid/Specifications
+✓ image2.jpg → Valid (passed all tests)
+```
+
+- ✅ = Test completed successfully
+- ✗ = Image failed this test
+- ✓ = Image passed and is valid
+
+---
+
+## 🔧 Advanced Usage & Technical Details
+
+### Custom Scan Mode
+
+Want to run only specific tests? Use **Custom Scan**:
+
+1. Select **[2] Custom Scan** from the main menu
+2. Choose which tests to run by entering numbers (e.g., "1 2 4")
+3. Only selected tests will be executed
+4. Results are organized the same way
+
+Available tests for Custom Scan:
+- **[1]** Specifications Check
+- **[2]** Border Detection  
+- **[3]** Watermark Detection
+- **[4]** Quality Assessment
+
+### Command Line Usage (Advanced Users)
+
+For automation or advanced workflows:
+
+```bash
+# Routine Scan via command line
+python routine_scan_simple.py --input "your_images" --output "results"
+
+# Custom Scan with specific tests (1=specs, 2=border, 3=watermark, 4=quality)
+python routine_scan_simple.py --custom "1 2 4" --input "your_images" --output "results"
+
+# Individual test scripts (for experts)
+python advanced_pyiqa_detector.py --fast --workers=6 --source "your_images"
+python border_detector.py --input "your_images" --output "results"
+python advanced_watermark_detector.py --input "your_images" --output "results"
+```
+
+---
+
+## 🖥️ System Requirements & Setup
+
+### Requirements:
+- **Windows 10/11** (primary support)
+- **Python 3.8+** (automatically guided setup)
+- **4GB RAM minimum** (8GB+ recommended for large batches)
+- **2GB free disk space** (for models and processing)
+
+### First-Time Setup:
+1. **Download** PhotoValidator folder
+2. **Run** `PhotoValidator.bat` - it will guide you through Python setup if needed
+3. **Create** `photos4testing` folder for your images
+4. **You're ready!** - Use Routine Scan for comprehensive validation
+
+---
+
+## 🏗️ Technical Architecture (For Developers)
+
+### Core Technologies:
+- **🚀 True Parallel Processing**: ThreadPoolExecutor for maximum performance
+- **🔍 Text Detection**: PaddleOCR with DB (Differentiable Binarization) model
+- **🏷️ Watermark Detection**: CNN-based identification using ConvNeXt architecture
 - **🖼️ Border Detection**: Multi-algorithm approach with adaptive thresholds
-- **⚡ Editing & Quality Analysis**: Fast default PyIQA model trio (BRISQUE + NIQE + CLIPIQA) with optional full suite (MUSIQ, DBCNN, HyperIQA)
-- **🎯 Adaptive Scoring**: Empirical normalization + multi-feature (histogram / frequency / edges) fusion
-- **📦 Batch Processing**: Efficient processing of large image datasets with true parallel execution
-- **📁 Smart Organization**: Automated sorting into valid / invalid / manual-review categories
-- **🛡️ Robust CLIP-IQA Handling**: Multi-attempt validation, score range checks, and fail-fast when explicitly requested
-- **🎮 Interactive or Headless Modes**: Model selection via prompt or CLI flags (`--fast`, `--models=`, `--workers=`)
+- **⚡ Quality Analysis**: PyIQA model trio (BRISQUE + NIQE + CLIPIQA) with optional full suite
+- **🎯 Adaptive Scoring**: Empirical normalization + multi-feature fusion
+- **📁 Smart Organization**: Automated sorting with comprehensive logging
+
+### Performance Metrics:
+- **Parallel Processing**: 3-6x faster than sequential processing
+- **Fast Model Set**: ~4.5-6 images/sec (BRISQUE + NIQE + CLIPIQA, 6 workers)
+- **Full Model Set**: ~3.2-4 images/sec (adds MUSIQ, DBCNN, HyperIQA, 6 workers)
+### Project Structure:
+
+```
+PhotoValidator/
+├── PhotoValidator.bat               # 🎮 Main interface - START HERE
+├── routine_scan_simple.py          # 🏗️ Routine & Custom scan engine
+├── photos4testing/                 # 📁 Place your images here
+├── Results/                        # 📊 Organized output (auto-created)
+│   ├── Valid/                      # ✅ Clean images
+│   ├── Invalid/                    # ❌ Problem images (by category)
+│   ├── ManualReview/               # 🔍 Borderline cases
+│   └── logs/                       # 📋 Processing reports
+├── main_optimized.py              # 🔧 Advanced processing controller
+├── advanced_pyiqa_detector.py     # ⚡ Quality & editing detection
+├── border_detector.py             # 🖼️ Border detection
+├── advanced_watermark_detector.py # 🏷️ Watermark detection
+├── Spec_detector.py               # 📏 Specifications validation
+└── requirements.txt               # 📦 Python dependencies
+```
+
+### Advanced CLI Commands (For Developers):
+
+```bash
+# Routine scan with custom settings
+python routine_scan_simple.py --input "custom_folder" --output "results" --python "python"
+
+# Custom scan with specific tests
+python routine_scan_simple.py --custom "1 3" --input "images" --output "results"
+
+# Individual test components
+python advanced_pyiqa_detector.py --fast --workers=6 --source "images"
+python border_detector.py --input "images" --output "results"
+python advanced_watermark_detector.py --input "images" --output "results"
+python main_optimized.py --tests specifications --source "images" --output "results"
+```
 
 ---
 
-## 🚀 Recent Enhancements (Performance & Robustness)
+## 📋 Installation & Dependencies (Technical)
 
-| Area | Improvement | Impact |
-|------|-------------|--------|
-| **Parallel Processing** | Implemented true ThreadPoolExecutor-based parallel processing | **~3-6x faster** batch processing vs sequential |
-| **Batch Interface** | Enhanced PhotoValidator.bat with optimized script routing | One-click access to parallel editing detection |
-| **Editing Detection** | Introduced fast recommended model set (BRISQUE, NIQE, CLIPIQA) | ~40–50% faster vs full set |
-| **Model Selection** | Added interactive prompt + non-interactive flags (`--fast`, `--models=`, `--workers=`) | Flexible automation with worker control |
-| **CLIP-IQA Stability** | 3-attempt guarded loading + multi-image validation + score sanity checks | Reliable inclusion when requested |
-| **Scoring Logic** | Empirical percentile normalization + feature fusion weighting | More discriminative editing confidence |
-| **Batch Integration** | PhotoValidator.bat option 4 now uses `advanced_pyiqa_detector.py --fast --workers=6` | Maximum performance for editing detection |
-| **Progress Reporting** | Real-time batch progress with ThreadPoolExecutor status | Clear visibility into parallel processing |
-| **Logging & Reports** | Unified JSON logs and editing confidence tables | Easier auditing |
-| **Test Coverage** | Added `test_clipiqa_robustness.py` for regression on loading behavior | Prevent silent degradation |
+### Python Requirements:
+- **Python 3.8+** (3.10+ recommended)
+- **Virtual environment recommended**
 
-**Performance Benchmarks (example run, 177 mixed images on mid-range GPU):**
-- **Parallel Fast trio** (BRISQUE + NIQE + CLIPIQA, 6 workers): **~4.5-6 images/sec**, ~0.39 GB GPU allocated
-- **Sequential Fast trio**: ~2.2 images/sec, ~0.39 GB GPU allocated  
-- **Parallel Full models** (adds MUSIQ, DBCNN, HyperIQA, 6 workers): **~3.2-4 images/sec**, ~0.65+ GB GPU allocated
-- **Sequential Full models**: ~1.4–1.6 images/sec, ~0.65+ GB GPU allocated
-
-**Key Insight**: True parallel processing provides **3-6x performance improvement** over sequential processing!
-
----
-
-## 🚀 Quick Start
-
-### Option 1: Interactive Batch Interface (Recommended for Windows)
-
-1. **Setup Environment**
-   ```powershell
-   # Run the setup script (one-time setup)
-   .\setup_python_environment.ps1
-   ```
-
-2. **Run PhotoValidator**
-   ```batch
-   # Double-click PhotoValidator.bat or run from command line
-   PhotoValidator.bat
-   ```
-
-3. **Select Test Type**
-   - **[1] Complete Pipeline Analysis** - All tests with parallel processing
-   - **[4] Quality & Editing Detection** - **Fast parallel PyIQA** with 6 workers (⚡ recommended for editing detection)
-   - **[2] Text Detection Only** - PaddleOCR text detection
-   - **[3] Border & Frame Detection** - Border analysis
-   - **[5] Watermark Detection** - CNN-based watermark detection
-   - **[6] Image Specifications Check** - Format and size validation
-
-### Option 2: Command Line Interface
-
-#### Basic Usage
-```bash
-# Add your images to the photos4testing folder
-# Run the main processing pipeline
-python main_optimized.py
-
-# Results will be organized in the Results/ folder
-```
-
-#### Advanced PyIQA Detector (Parallel Editing Detection)
-```bash
-# Fast parallel processing (recommended)
-python advanced_pyiqa_detector.py --fast --workers=6
-
-# Custom worker count for your system
-python advanced_pyiqa_detector.py --fast --workers=4
-
-# All available models with parallel processing
-python advanced_pyiqa_detector.py --workers=8
-```
-
-## 📋 System Requirements
-
-### Python Version
-- **Python 3.8 or higher** (recommended: Python 3.10+)
-
-### Hardware Requirements
-- **RAM**: Minimum 8GB, recommended 16GB+
-- **GPU**: Optional but recommended (CUDA-compatible for PyTorch and PaddlePaddle)
-- **Storage**: At least 5GB free space for models and cache
-- **CPU**: Multi-core processor recommended
-
-### Operating Systems
-- Windows 10/11
-- macOS 10.15+
-- Ubuntu 18.04+
-- Other Linux distributions (tested on CentOS, Fedora)
-
-## 📦 Installation Guide
-
-### Step 1: Environment Setup
-
-#### Option A: Using Virtual Environment (Recommended)
-```bash
-# Create virtual environment
-python -m venv photovalidator-env
-
-# Activate environment
-# On Windows:
-photovalidator-env\Scripts\activate
-# On macOS/Linux:
-source photovalidator-env/bin/activate
-```
-
-#### Option B: Using Conda
-```bash
-# Create a new conda environment
-conda create -n photovalidator python=3.10
-conda activate photovalidator
-```
-
-### Step 2: Install Dependencies
-
+### Key Dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-The required packages include:
-- torch (PyTorch for neural networks)
-- opencv-python (Computer vision operations)
-- paddlepaddle and paddleocr (Text detection)
-- pyiqa (Image quality assessment)
-- PIL/Pillow (Image processing)
-- numpy, matplotlib (Data processing and visualization)
+Core packages:
+- `torch` - PyTorch for neural networks
+- `opencv-python` - Computer vision operations  
+- `paddlepaddle` & `paddleocr` - Text detection
+- `pyiqa` - Image quality assessment
+- `Pillow` - Image processing
+- `numpy`, `matplotlib` - Data processing
 
-## 🏗️ Project Structure
+### Hardware Recommendations:
+- **RAM**: 8GB minimum, 16GB+ recommended
+- **GPU**: Optional but recommended (CUDA-compatible)
+- **Storage**: 5GB+ free space for models and cache
+- **CPU**: Multi-core processor recommended
 
-```
-PhotoValidator/
-├── PhotoValidator.bat                 # 🎮 Interactive Windows batch interface (MAIN ENTRY POINT)
-├── main_optimized.py                 # 🏗️ Main processing controller
-├── advanced_pyiqa_detector.py        # ⚡ PARALLEL PyIQA editing detection (NEW: --workers support)
-├── optimized_pipeline.py             # 🔄 Core processing pipeline
-├── paddle_text_detector.py           # 📝 PaddleOCR text detection
-├── advanced_watermark_detector.py    # 🏷️ Watermark detection system
-├── border_detector.py               # 🖼️ Border and frame detection
-├── Spec_detector.py                 # 📏 Image specification analysis
-├── requirements.txt                 # 📦 Python dependencies
-├── README.md                        # 📖 This documentation
-├── photos4testing/                  # 📁 Input images folder
-├── Results/                         # 📊 Output results folder (auto-created)
-│   ├── valid/                      # ✅ Valid images
-│   ├── invalid/                    # ❌ Invalid images
-│   ├── manualreview/               # 🔍 Images requiring manual review
-│   └── logs/                       # 📋 Processing reports and logs
-│       ├── *.md                    # Enhancement documentation & analysis
-│       └── *.json                  # Machine-readable processing logs
-├── models/                         # 🤖 Downloaded models cache
-├── models_cache/                   # 💾 Model cache directory
-├── PADDLE_OCR_RESULTS/             # 📝 PaddleOCR specific results
-└── watermark-detection/            # 🏷️ Watermark detection submodule
-```
+### Supported Systems:
+- Windows 10/11 (primary support)
+- macOS 10.15+  
+- Ubuntu 18.04+
+---
 
-### Key Components Explained
+## 🐛 Troubleshooting & Support
 
-- **🎮 PhotoValidator.bat**: The main interactive interface - start here for guided workflows
-- **⚡ advanced_pyiqa_detector.py**: Now supports `--workers=N` for true parallel processing
-- **🔧 setup_python_environment.ps1**: Automated environment setup for Windows users
-- **📊 Results/**: All outputs organized by validation status with detailed logs
+### Common Issues:
 
-## 🎮 Usage Guide
+**❓ "Python not found" error**
+- Run `PhotoValidator.bat` - it will guide you through Python installation
+- Or manually install Python 3.8+ from python.org
 
-### PhotoValidator.bat - Interactive Interface (Recommended)
+**❓ "CUDA out of memory" warning**  
+- The system automatically uses CPU mode - no action needed
+- For better performance, reduce image batch size
 
-The `PhotoValidator.bat` provides a user-friendly menu-driven interface:
+**❓ Slow processing**
+- Use Routine Scan (option 1) - it's optimized for performance
+- Close other programs to free up system resources
+- Consider using Custom Scan to run only needed tests
 
-```
-╔══════════════════════════════════════════════════════════════════════════╗
-║                           PHOTOVALIDATOR                                 ║
-╚══════════════════════════════════════════════════════════════════════════╝
+**❓ Images not organizing correctly**
+- Check that your images are in `photos4testing` folder
+- Ensure image formats are supported (JPG, PNG, BMP, TIFF)
+- Check `Results/logs/` folder for detailed processing information
 
-┌──────────────────────────────────────────────────────────────┐
-│                     CORE VALIDATION TESTS                    │
-└──────────────────────────────────────────────────────────────┘
+### Getting Help:
 
-  [1] Complete Pipeline Analysis        
-  [2] Text Detection Only                 
-  [3] Border & Frame Detection         
-  [4] Quality & Editing Detection      ⚡ FAST PARALLEL (6 workers)
-  [5] Watermark Detection               
-  [6] Image Specifications Check        
-
-┌──────────────────────────────────────────────────────────────┐
-│                      ADVANCED OPTIONS                        │
-└──────────────────────────────────────────────────────────────┘
-
-  [7] Custom Test Combination           
-  [8] System Information              
-  [9] View Analysis Reports            
-  [A] Advanced PyIQA Editing Detection  
-  [V] Full System Validation           
-  [P] Configure Paths & Settings      
-  [M] Model Cache Management           
-  [G] GPU Configuration                
-```
-
-**🎯 Recommended Workflow:**
-1. Run option **[4] Quality & Editing Detection** for fast parallel PyIQA analysis
-2. Use **[1] Complete Pipeline Analysis** for comprehensive validation
-3. Use **[A] Advanced PyIQA Editing Detection** for detailed editing forensics
-
-### Command Line Usage
-
-#### Main Pipeline
-```bash
-# Basic usage - all tests enabled
-python main_optimized.py
-
-# Specify custom source and output directories
-python main_optimized.py --source /path/to/images --output /path/to/results
-
-# Run only specific tests
-python main_optimized.py --tests specifications borders
-
-# Skip specific tests
-python main_optimized.py --no-text --no-editing
-```
-
-#### Advanced PyIQA Detector (Parallel Editing Analysis)
-
-`advanced_pyiqa_detector.py` provides deep editing forensics with true parallel processing:
-
-```bash
-# ⚡ Fast parallel processing (recommended)
-python advanced_pyiqa_detector.py --fast --workers=6
-
-# 🎯 Custom worker count based on your CPU cores
-python advanced_pyiqa_detector.py --fast --workers=4
-
-# 🔧 Specific models with parallel processing
-python advanced_pyiqa_detector.py --models=brisque,niqe,musiq --workers=8
-
-# 🖥️ Force CPU mode with parallel processing
-python advanced_pyiqa_detector.py --fast --cpu --workers=4
-
-# 📊 Diagnostic mode with validation
-python advanced_pyiqa_detector.py --fast --workers=6 --diagnostics
-```
-
-**CLI Flags:**
-
-```
-python advanced_pyiqa_detector.py [OPTIONS]
-
-Performance Options:
-   --fast             Use fast recommended trio (brisque, niqe, clipiqa) 
-   --workers=N        Number of parallel workers (default: 6, max: 12)
-   --models=LIST      Explicit comma-separated list (e.g. --models=brisque,niqe,musiq)
-
-System Options:
-   --source DIR       Override input folder (default: photos4testing)
-   --cpu              Force CPU mode
-   --gpu=N            Select GPU index
-   --diagnostics      Run internal scoring validation suite
-```
-
-### Interactive Model Selection (when no --fast flag used)
-
-When running without `--fast`, the system presents an interactive menu:
-
-```
-Select PyIQA Model Configuration:
-1. Fast trio (BRISQUE + NIQE + CLIPIQA) ⚡ (recommended)
-2. All models (adds MUSIQ, DBCNN, HyperIQA) 
-3. Select specific models
-4. Exclude specific models
-
-Choice [1]: 
-```
-
-### Main Pipeline Options
-
-The main script `main_optimized.py` supports these arguments:
-
-```bash
-python main_optimized.py [OPTIONS]
-
-  --source SOURCE, -s    Source directory containing images
-  --output OUTPUT, -o    Output directory for results  
-  --dry-run             Process images but don't copy files
-  --tests LIST          Tests to run: specifications,text,borders,editing,watermarks
-  --no-specs            Skip specifications check
-  --no-text             Skip text detection (PaddleOCR)
-  --no-borders          Skip border detection
-  --no-editing          Skip editing detection (PyIQA)
-  --no-watermarks       Skip watermark detection
-  --quiet, -q           Suppress detailed progress output
-```
-
-### Testing & Diagnostic Tools
-
-Additional tools for model validation and performance analysis:
-
-```bash
-# Test all PyIQA model combinations with confidence analysis
-python pyiqa_model_combinations_test.py [--models=LIST] [--source DIR]
-
-# Validate CLIP-IQA robustness and loading behavior
-python test_clipiqa_robustness.py
-
-# Diagnostic run with internal validation checks
-python advanced_pyiqa_detector.py --diagnostics --workers=6
-```
-
-### Usage Examples
-
-#### PhotoValidator.bat Examples
-```batch
-# Start the interactive interface
-PhotoValidator.bat
-
-# Select option 4 for fast parallel editing detection
-# Select option 1 for complete pipeline analysis
-# Select option A for advanced PyIQA analysis
-```
-
-#### Command Line Examples
-```bash
-# Fast parallel editing detection (recommended)
-python advanced_pyiqa_detector.py --fast --workers=6
-
-# Custom worker count for your system
-python advanced_pyiqa_detector.py --fast --workers=4
-
-# All models with maximum parallelism
-python advanced_pyiqa_detector.py --workers=8
-
-# Specific models on custom folder
-python advanced_pyiqa_detector.py --models=brisque,niqe,musiq --source ./batch_images
-
-# CPU-only mode with parallel processing
-python advanced_pyiqa_detector.py --fast --cpu --workers=4
-
-# Main pipeline with specific tests
-python main_optimized.py --tests editing borders --source ./test_images
-
-# Dry run to test without moving files
-python main_optimized.py --dry-run --tests editing
-```
-
-```
+1. **Check the `Results/logs/` folder** for detailed error information
+2. **Run Full System Validation** (option V) to check your setup
+3. **Use Custom Scan** to isolate which specific test is causing issues
 
 ---
 
-## 📊 Output Analysis
+## � Quick Reference Card
 
-### File Organization
+### For Regular Users:
+1. **Put images** in `photos4testing` folder
+2. **Run** `PhotoValidator.bat`  
+3. **Select [1] Routine Scan**
+4. **Check** `Results` folder when done
 
-Images are automatically sorted into folders based on validation results:
+### For Advanced Users:
+- **Custom Scan**: Pick specific tests (option 2)
+- **CLI Usage**: `python routine_scan_simple.py --help`
+- **Individual Tests**: Run specific detection scripts directly
 
-- **`Results/valid/`** - Images that passed all validation checks
-- **`Results/invalid/`** - Images that failed validation checks  
-- **`Results/manualreview/`** - Images that need manual review (borderline cases)
-- **`Results/logs/`** - Processing reports, JSON logs, and analysis summaries
+### Result Folders:
+- **✅ Valid**: Ready to use
+- **❌ Invalid**: Problems detected (organized by issue type)
+- **🔍 ManualReview**: Check these yourself
+- **📋 logs**: Detailed processing information
 
-### Parallel Processing Output
+---
 
-When using parallel processing (PhotoValidator.bat option 4 or `--workers=N`), you'll see:
-
-```
-Processing 45 images with 6 workers...
-Batch Progress: ████████████████████████████████ 100% (45/45) [Elapsed: 12.3s, Rate: 3.66 img/s]
-```
-
-### Console Output Features
-
-The system provides comprehensive real-time feedback:
-
-1. **🔄 Processing Progress**: Shows each image with parallel worker status
-2. **📊 Editing Confidence Analysis Table**: Detailed confidence scores for all images
-3. **📈 Performance Metrics**: Processing speed, worker utilization, memory usage
-4. **📁 File Movement Summary**: Clear indication of which files were moved vs kept in place
-5. **🎯 Success Statistics**: Final counts, success rates, and timing information
-
-### Processing Reports & Logs
-
-The system generates comprehensive reports in the `Results/logs/` folder:
-
-#### JSON Reports (Machine-Readable)
-- **`processing_results_[timestamp].json`** - Complete processing data
-- **`editing_analysis_[timestamp].json`** - Detailed editing confidence analysis
-- **`performance_metrics_[timestamp].json`** - Timing and performance data
-
-#### Text Reports (Human-Readable) 
-- **`summary_report_[timestamp].txt`** - Processing summary with:
-  - Total statistics and success rates
-  - Performance metrics (images/second, worker utilization)
-  - List of valid images
-  - List of invalid images with detailed failure reasons
-  - List of images flagged for editing review
-  - Processing time breakdown
-
-#### Console Output Features
-
-The system provides comprehensive real-time feedback:
-
-1. **🔄 Parallel Progress Bars**: Shows worker utilization and processing speed
-2. **📊 Editing Confidence Table**: Sortable table with confidence scores
-3. **🎯 Performance Metrics**: Real-time throughput and timing
-4. **📁 File Operations**: Clear indication of file organization into valid/manual review/invalid folders
-5. **📈 Summary Statistics**: Final counts, success rates, and recommendations
-
-#### Sample Console Output
-```
-Processing 177 images with 6 workers...
-Batch Progress: ████████████████████████████████ 100% (177/177) [Elapsed: 39.2s, Rate: 4.51 img/s]
-
-EDITING CONFIDENCE ANALYSIS:
-────────────────────────────────────────────────────
-Filename                     Editing Confidence    Assessment
-────────────────────────────────────────────────────
-heavily_edited_sunset.jpg    89.2%                 Invalid - heavily edited (>30%)
+*PhotoValidator - Making image validation simple and reliable.*
 portrait_enhanced.jpg        67.3%                 Invalid - heavily edited (>30%)
 landscape_touched.jpg        27.1%                 Manual review needed (25-30%)
 nature_photo.jpg             12.1%                 Valid - clean image (<25%)
